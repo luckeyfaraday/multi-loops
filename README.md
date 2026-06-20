@@ -463,6 +463,10 @@ The current MVP has a deterministic one-generation runtime:
   on stdin.
 - Verification commands can run after a candidate and affect its success score.
 
+Note: in the current MVP, candidate loops within a generation run sequentially, not
+in parallel. The parallel-population behavior described above is the design target,
+not yet the runtime behavior.
+
 CLI examples:
 
 ```bash

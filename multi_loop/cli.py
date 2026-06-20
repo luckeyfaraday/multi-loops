@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from .models import to_dict
@@ -64,6 +65,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     store = MissionStore(args.root)
 
+    try:
+        return _dispatch(args, store)
+    except FileNotFoundError:
+        target = getattr(args, "mission_id", None) or "the requested resource"
+        print(f"Mission not found: {target}", file=sys.stderr)
+        return 1
+
+
+def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
     if args.command == "create":
         orchestrator = MissionOrchestrator(store=store)
         mission = orchestrator.create_mission(
@@ -172,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
         _print_json(to_dict(report))
         return 0
 
-    parser.error(f"Unknown command: {args.command}")
+    print(f"Unknown command: {args.command}", file=sys.stderr)
     return 2
 
 

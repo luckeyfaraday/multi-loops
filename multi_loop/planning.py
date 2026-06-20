@@ -205,24 +205,28 @@ def _attach_policy_gates(
     mission: Mission,
     capabilities: CapabilityRegistry,
 ) -> None:
-    existing = {gate.capability for gate in candidate.policy_gates}
+    gates_by_capability = {gate.capability: gate for gate in candidate.policy_gates}
     for ref in candidate.required_capabilities:
         capability = capabilities.get(ref.name)
         if capability is None or capability.side_effect_class not in _APPROVAL_REQUIRED:
             continue
-        if ref.name in existing:
-            continue
         approved_by = mission.approvals.get(ref.name)
-        candidate.policy_gates.append(
-            PolicyGate(
-                capability=ref.name,
-                side_effect_class=capability.side_effect_class,
-                requires_approval=True,
-                approved_by=approved_by,
-                approved_at=None if approved_by is None else mission.updated_at,
+        approved_at = None if approved_by is None else mission.updated_at
+        gate = gates_by_capability.get(ref.name)
+        if gate is None:
+            candidate.policy_gates.append(
+                PolicyGate(
+                    capability=ref.name,
+                    side_effect_class=capability.side_effect_class,
+                    requires_approval=True,
+                    approved_by=approved_by,
+                    approved_at=approved_at,
+                )
             )
-        )
-        existing.add(ref.name)
+        elif gate.approved_by is None and approved_by is not None:
+            # An approval recorded after the gate was first attached should take effect.
+            gate.approved_by = approved_by
+            gate.approved_at = approved_at
 
 
 def _policy_block_reason(policy_gates: list[PolicyGate]) -> str | None:

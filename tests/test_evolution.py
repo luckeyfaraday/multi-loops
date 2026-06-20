@@ -52,6 +52,27 @@ class EvolutionTests(unittest.TestCase):
         self.assertEqual(campaign.state.value, "completed")
         self.assertNotIn(campaign.id, result.blocked_candidates)
 
+    def test_blocked_candidate_is_discarded_and_not_retried(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MissionStore(Path(tmpdir) / ".multi-loop")
+            orchestrator = MissionOrchestrator(store=store)
+            mission = orchestrator.create_mission(
+                "Run ad campaign experiments",
+                "Produce campaign variants",
+            )
+
+            first = orchestrator.run_generation(mission.id)
+            orchestrator.run_generation(mission.id)
+            loaded = store.load_mission(mission.id)
+
+        gen0 = loaded.generations[0]
+        campaign = next(c for c in gen0.candidate_loops if c.role == "campaign_experiment")
+        self.assertEqual(campaign.state.value, "discarded")
+        self.assertIn(campaign.id, first.blocked_candidates)
+
+        gen1 = loaded.generations[1]
+        self.assertTrue(all(campaign.id not in c.parent_ids for c in gen1.candidate_loops))
+
 
 if __name__ == "__main__":
     unittest.main()

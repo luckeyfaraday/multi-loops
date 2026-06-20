@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -164,10 +165,21 @@ class MissionOrchestrator:
                     metadata={"blocked_by_policy": True},
                 )
             else:
-                result = self._run_candidate(mission, generation_index, candidate)
-                self._apply_verification(mission, candidate, result, verify_timeout_seconds)
+                try:
+                    result = self._run_candidate(mission, generation_index, candidate)
+                    self._apply_verification(mission, candidate, result, verify_timeout_seconds)
+                except Exception as exc:  # isolate one candidate's crash from the generation
+                    result = RunResult(
+                        candidate_loop_id=candidate.id,
+                        success=False,
+                        summary=f"Candidate raised an unexpected error: {exc}",
+                        metadata={"error": type(exc).__name__},
+                    )
 
-            candidate.state = CandidateState.COMPLETED if result.success else CandidateState.FAILED
+            if blocked_reason:
+                candidate.state = CandidateState.DISCARDED
+            else:
+                candidate.state = CandidateState.COMPLETED if result.success else CandidateState.FAILED
             candidate.result = result.summary
             candidate.artifacts = result.artifacts
             candidate.fitness = self.reviewer.score(candidate, result)
@@ -177,11 +189,17 @@ class MissionOrchestrator:
             self.store.write_result(mission.id, result_relative_path, run_result_to_dict(result))
             result_paths.append(result_relative_path)
 
+            if blocked_reason:
+                candidate_event_type = "candidate_discarded"
+            elif result.success:
+                candidate_event_type = "candidate_completed"
+            else:
+                candidate_event_type = "candidate_failed"
             entry = LedgerEntry(
                 mission_id=mission.id,
                 generation_index=generation_index,
                 candidate_loop_id=candidate.id,
-                event_type="candidate_completed" if result.success else "candidate_failed",
+                event_type=candidate_event_type,
                 summary=result.summary,
                 artifacts=result.artifacts,
             )
@@ -314,7 +332,11 @@ def _select_lineage(generation: Generation) -> list[str]:
     if not scored:
         return []
     best_score = scored[0].score
-    return [score.candidate_loop_id for score in scored if score.score == best_score]
+    return [
+        score.candidate_loop_id
+        for score in scored
+        if math.isclose(score.score, best_score, rel_tol=1e-9, abs_tol=1e-9)
+    ]
 
 
 def _synthesize_generation(mission: Mission, generation: Generation) -> str:
