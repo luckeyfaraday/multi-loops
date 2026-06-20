@@ -90,6 +90,15 @@ class HeuristicPortfolioPlanner:
             for candidate in previous.candidate_loops
             if candidate.state == CandidateState.FAILED
         ]
+        # Candidates discarded because a policy gate blocked them are not retried
+        # blindly (that would loop forever while approval is withheld). But once
+        # their capability has since been approved, resume the work.
+        recoverable = [
+            candidate
+            for candidate in previous.candidate_loops
+            if candidate.state == CandidateState.DISCARDED
+            and not _candidate_blocked_now(candidate, mission, self.capabilities)
+        ]
 
         for winner in winners:
             child = _base_loop(
@@ -120,6 +129,18 @@ class HeuristicPortfolioPlanner:
             )
             candidates.append(child)
             mutations.append(f"retry_narrow:{failed.id}->{child.id}")
+
+        for blocked in recoverable:
+            child = _base_loop(
+                mission,
+                role=f"{blocked.role}_approved",
+                goal=f"Resume now-approved work: {blocked.goal}",
+                success_criteria=blocked.success_criteria,
+                capabilities=_capability_names(blocked),
+                parent_ids=[blocked.id],
+            )
+            candidates.append(child)
+            mutations.append(f"approved_retry:{blocked.id}->{child.id}")
 
         if len(winners) >= 2:
             left, right = winners[0], winners[1]
@@ -205,24 +226,55 @@ def _attach_policy_gates(
     mission: Mission,
     capabilities: CapabilityRegistry,
 ) -> None:
-    existing = {gate.capability for gate in candidate.policy_gates}
+    gates_by_capability = {gate.capability: gate for gate in candidate.policy_gates}
     for ref in candidate.required_capabilities:
         capability = capabilities.get(ref.name)
         if capability is None or capability.side_effect_class not in _APPROVAL_REQUIRED:
             continue
-        if ref.name in existing:
-            continue
         approved_by = mission.approvals.get(ref.name)
-        candidate.policy_gates.append(
-            PolicyGate(
-                capability=ref.name,
-                side_effect_class=capability.side_effect_class,
-                requires_approval=True,
-                approved_by=approved_by,
-                approved_at=None if approved_by is None else mission.updated_at,
+        approved_at = None if approved_by is None else mission.updated_at
+        gate = gates_by_capability.get(ref.name)
+        if gate is None:
+            candidate.policy_gates.append(
+                PolicyGate(
+                    capability=ref.name,
+                    side_effect_class=capability.side_effect_class,
+                    requires_approval=True,
+                    approved_by=approved_by,
+                    approved_at=approved_at,
+                )
             )
-        )
-        existing.add(ref.name)
+        elif gate.approved_by is None and approved_by is not None:
+            # An approval recorded after the gate was first attached should take effect.
+            gate.approved_by = approved_by
+            gate.approved_at = approved_at
+
+
+def _candidate_blocked_now(
+    candidate: CandidateLoop,
+    mission: Mission,
+    capabilities: CapabilityRegistry,
+) -> bool:
+    """Whether the candidate would be blocked under the mission's current state.
+
+    Mirrors the gating in `prepare_candidate` without mutating the candidate, so
+    the planner can decide whether a previously discarded candidate is now
+    runnable (e.g. its capability has since been approved).
+    """
+    for ref in candidate.required_capabilities:
+        capability = capabilities.get(ref.name)
+        if capability is None:
+            if ref.required:
+                return True
+            continue
+        if ref.required and not capabilities.available(ref.name):
+            return True
+        if (
+            capability.side_effect_class in _APPROVAL_REQUIRED
+            and not mission.approvals.get(ref.name)
+        ):
+            return True
+    return False
 
 
 def _policy_block_reason(policy_gates: list[PolicyGate]) -> str | None:

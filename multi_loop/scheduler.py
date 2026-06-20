@@ -64,7 +64,7 @@ class MissionScheduler:
                 )
                 continue
 
-            if schedule.max_generation_steps <= 0:
+            if schedule.max_generation_steps is not None and schedule.max_generation_steps <= 0:
                 report.skipped.append(
                     TickResult(
                         mission_id=mission.id,
@@ -78,6 +78,11 @@ class MissionScheduler:
             result = self.orchestrator.run_generation(mission.id)
             refreshed = self.store.load_mission(mission.id)
             refreshed.schedule = advance_schedule(refreshed.schedule, current)
+            if refreshed.schedule is not None and refreshed.schedule.max_generation_steps is not None:
+                refreshed.schedule.max_generation_steps -= 1
+                if refreshed.schedule.max_generation_steps <= 0:
+                    # Exhausted: disable so the mission stops being reconsidered each tick.
+                    refreshed.schedule.enabled = False
             self.store.save_mission(refreshed)
 
             report.ticked.append(

@@ -8,6 +8,14 @@ from pathlib import Path
 from .models import Event, LedgerEntry, Mission, from_dict, to_dict, utc_now_iso
 
 
+class MissionNotFound(FileNotFoundError):
+    """Raised when a mission is requested but does not exist on disk."""
+
+    def __init__(self, mission_id: str) -> None:
+        super().__init__(f"Mission not found: {mission_id}")
+        self.mission_id = mission_id
+
+
 class MissionStore:
     """Persist missions under `.multi-loop/runs/<mission-id>/`."""
 
@@ -35,8 +43,11 @@ class MissionStore:
 
     def load_mission(self, mission_id: str) -> Mission:
         path = self.mission_dir(mission_id) / "mission.json"
-        with path.open("r", encoding="utf-8") as handle:
-            return from_dict(Mission, json.load(handle))
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                return from_dict(Mission, json.load(handle))
+        except FileNotFoundError as exc:
+            raise MissionNotFound(mission_id) from exc
 
     def list_missions(self) -> list[Mission]:
         if not self.runs_dir.exists():

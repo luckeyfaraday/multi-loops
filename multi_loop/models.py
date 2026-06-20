@@ -41,16 +41,6 @@ class CandidateState(str, Enum):
     DISCARDED = "discarded"
 
 
-class JobState(str, Enum):
-    """Lifecycle state for a scheduled mission job."""
-
-    SCHEDULED = "scheduled"
-    RUNNING = "running"
-    PAUSED = "paused"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
 @dataclass(slots=True)
 class Budget:
     max_iterations: int | None = None
@@ -143,7 +133,7 @@ class Generation:
 class MissionSchedule:
     expression: str
     next_run_at: str | None = None
-    max_generation_steps: int = 1
+    max_generation_steps: int | None = None
     enabled: bool = True
 
 
@@ -160,17 +150,6 @@ class Mission:
     ledger: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
-
-
-@dataclass(slots=True)
-class Job:
-    mission_id: str
-    schedule: MissionSchedule
-    id: str = field(default_factory=lambda: new_id("job"))
-    state: JobState = JobState.SCHEDULED
-    enabled_capabilities: list[str] = field(default_factory=list)
-    disabled_capabilities: list[str] = field(default_factory=list)
-    created_at: str = field(default_factory=utc_now_iso)
 
 
 @dataclass(slots=True)

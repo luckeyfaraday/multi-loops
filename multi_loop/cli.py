@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from .models import to_dict
 from .onboarding import OnboardingEngine, collect_answers, format_capability_brief
 from .orchestrator import MissionOrchestrator
 from .scheduler import MissionScheduler
-from .storage import MissionStore
+from .storage import MissionNotFound, MissionStore
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -64,6 +65,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     store = MissionStore(args.root)
 
+    try:
+        return _dispatch(args, store)
+    except MissionNotFound as exc:
+        print(f"Mission not found: {exc.mission_id}", file=sys.stderr)
+        return 1
+
+
+def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
     if args.command == "create":
         orchestrator = MissionOrchestrator(store=store)
         mission = orchestrator.create_mission(
@@ -172,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
         _print_json(to_dict(report))
         return 0
 
-    parser.error(f"Unknown command: {args.command}")
+    print(f"Unknown command: {args.command}", file=sys.stderr)
     return 2
 
 
