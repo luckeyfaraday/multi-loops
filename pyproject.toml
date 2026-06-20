@@ -8,6 +8,25 @@ version = "0.2.0"
 description = "Deterministic multi-loop mission orchestration harness"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "luckeyfaraday" }]
+keywords = ["orchestration", "agents", "llm", "loop", "automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/luckeyfaraday/multi-loops"
+Repository = "https://github.com/luckeyfaraday/multi-loops"
+Issues = "https://github.com/luckeyfaraday/multi-loops/issues"
 
 [project.scripts]
 multi-loop = "multi_loop.cli:main"
