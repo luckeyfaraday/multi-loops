@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multi-loop"
+version = "0.2.0"
+description = "Deterministic multi-loop mission orchestration harness"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[project.scripts]
+multi-loop = "multi_loop.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["multi_loop*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
