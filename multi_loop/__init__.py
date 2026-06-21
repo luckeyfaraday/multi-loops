@@ -1,6 +1,6 @@
 """Core primitives for multi-loop mission orchestration."""
 
-from .capabilities import CapabilityRegistry, default_capabilities
+from .capabilities import CapabilityRegistry, default_capabilities, default_toolsets
 from .models import (
     Artifact,
     Budget,
@@ -17,6 +17,7 @@ from .models import (
     PolicyGate,
     ScheduleState,
     SideEffectClass,
+    Toolset,
 )
 from .leases import MissionBusy, MissionLease, acquire_mission_lease
 from .orchestrator import GenerationRunResult, MissionOrchestrator, ScheduleNotConfigured
@@ -72,6 +73,7 @@ __all__ = [
     "ScheduleState",
     "SchedulerTickReport",
     "TickResult",
+    "Toolset",
     "prepare_candidate",
     "CapabilityRecommendation",
     "OnboardingEngine",
@@ -92,6 +94,7 @@ __all__ = [
     "compute_next_run",
     "default_capabilities",
     "default_runner_registry",
+    "default_toolsets",
     "format_capability_brief",
     "parse_schedule",
     "resolve_within",

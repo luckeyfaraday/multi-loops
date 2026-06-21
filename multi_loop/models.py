@@ -84,6 +84,20 @@ class CapabilityRef:
 
 
 @dataclass(slots=True)
+class Toolset:
+    """A named, composable bundle of capabilities.
+
+    ``capabilities`` lists capability names; ``includes`` lists other toolset
+    names whose capabilities are folded in during resolution.
+    """
+
+    name: str
+    description: str = ""
+    capabilities: list[str] = field(default_factory=list)
+    includes: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class PolicyGate:
     capability: str
     side_effect_class: SideEffectClass

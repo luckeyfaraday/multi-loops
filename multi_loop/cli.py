@@ -83,6 +83,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Include unavailable capabilities in search results",
     )
 
+    toolsets_parser = subparsers.add_parser("toolsets", help="List or resolve capability toolsets")
+    toolsets_parser.add_argument(
+        "--resolve",
+        help="Resolve toolset/capability names (comma- or space-separated, or all) to capabilities",
+    )
+
     subparsers.add_parser("tick", help="Run scheduled mission ticks that are due")
 
     args = parser.parse_args(argv)
@@ -234,6 +240,28 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
             if args.available:
                 cards = [card for card in cards if card["available"]]
             _print_json({"capabilities": cards, "count": len(cards)})
+        return 0
+
+    if args.command == "toolsets":
+        registry = default_capabilities()
+        if args.resolve:
+            names = args.resolve.replace(",", " ").split()
+            try:
+                resolved = registry.resolve_names(names)
+            except KeyError as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            _print_json(
+                {
+                    "names": names,
+                    "resolved": resolved,
+                    "available": [name for name in resolved if registry.available(name)],
+                }
+            )
+        else:
+            _print_json(
+                {"toolsets": [registry.describe_toolset(name) for name in registry.toolset_names()]}
+            )
         return 0
 
     if args.command == "tick":

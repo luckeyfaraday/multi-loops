@@ -564,6 +564,11 @@ The server exposes the mission runtime directly:
   returns one full card (including `available`, `requires_env`, and `missing_env`),
   and list enumerates all cards. The same surface is available from the CLI via
   `multi-loop capabilities [--search Q | --describe NAME | --available]`.
+- `toolset_list` and `toolset_resolve` work with named capability bundles.
+  Toolsets compose via `includes` (e.g. `company` folds in `research`,
+  `outreach`, and `media`), and resolution accepts a mix of toolset names,
+  capability names, and `all`/`*`, returning a deduped capability list. The CLI
+  mirrors this with `multi-loop toolsets [--resolve "company,agent_loop"]`.
 
 Detached MCP run logs live under `.multi-loop/mcp-runs/<run-id>/` with
 `events.jsonl`, `status.json`, and `result.json`. Mission state remains under

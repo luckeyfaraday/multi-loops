@@ -1,7 +1,13 @@
 import unittest
 from unittest import mock
 
-from multi_loop import Capability, CapabilityRegistry, SideEffectClass, default_capabilities
+from multi_loop import (
+    Capability,
+    CapabilityRegistry,
+    SideEffectClass,
+    Toolset,
+    default_capabilities,
+)
 
 
 class CapabilityRegistryTests(unittest.TestCase):
@@ -85,6 +91,60 @@ class CapabilityRegistryTests(unittest.TestCase):
         self.assertGreaterEqual(len(cards), 1)
         self.assertEqual(cards[0]["name"], "scheduled_tick")
         self.assertIn("available", cards[0])
+
+
+class ToolsetTests(unittest.TestCase):
+    def _registry(self) -> CapabilityRegistry:
+        registry = CapabilityRegistry()
+        for name in ("a", "b", "c"):
+            registry.register(Capability(name=name, description=name, toolset_or_backend="x"))
+        registry.register_toolset(Toolset(name="ab", capabilities=["a", "b"]))
+        registry.register_toolset(Toolset(name="abc", capabilities=["c"], includes=["ab"]))
+        return registry
+
+    def test_resolve_expands_includes_in_order(self):
+        registry = self._registry()
+        self.assertEqual(registry.resolve_names("abc"), ["a", "b", "c"])
+
+    def test_resolve_mixes_names_and_dedups(self):
+        registry = self._registry()
+        self.assertEqual(registry.resolve_names(["ab", "c", "a"]), ["a", "b", "c"])
+
+    def test_resolve_all_token_returns_every_capability(self):
+        registry = self._registry()
+        self.assertEqual(set(registry.resolve_names("all")), {"a", "b", "c"})
+        self.assertEqual(registry.resolve_names("*"), registry.resolve_names("all"))
+
+    def test_resolve_is_cycle_safe(self):
+        registry = self._registry()
+        registry.register_toolset(Toolset(name="x", capabilities=["a"], includes=["y"]))
+        registry.register_toolset(Toolset(name="y", capabilities=["b"], includes=["x"]))
+        self.assertEqual(set(registry.resolve_names("x")), {"a", "b"})
+
+    def test_resolve_unknown_name_raises(self):
+        with self.assertRaises(KeyError):
+            self._registry().resolve_names("missing")
+
+    def test_resolve_can_drop_unavailable(self):
+        registry = default_capabilities()
+        # The company toolset bundles future/unavailable capabilities.
+        available = registry.resolve("company", include_unavailable=False)
+        self.assertEqual(available, [])
+        self.assertGreater(len(registry.resolve("company")), 0)
+
+    def test_default_company_toolset_resolves_through_includes(self):
+        registry = default_capabilities()
+        resolved = registry.resolve_names("company")
+        self.assertIn("web_research", resolved)
+        self.assertIn("paid_ads", resolved)
+        self.assertIn("media_generation", resolved)
+
+    def test_describe_toolset_reports_resolution(self):
+        registry = default_capabilities()
+        card = registry.describe_toolset("local_workers")
+        self.assertEqual(card["name"], "local_workers")
+        self.assertIn("agent_loop", card["resolved"])
+        self.assertIn("agent_loop", card["available"])
 
 
 if __name__ == "__main__":

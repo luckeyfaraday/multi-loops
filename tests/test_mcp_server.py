@@ -21,6 +21,8 @@ from multi_loop.mcp_server import (
     run_result_impl,
     run_status_impl,
     run_tail_impl,
+    toolset_list_impl,
+    toolset_resolve_impl,
 )
 
 
@@ -113,6 +115,19 @@ class McpServerTests(unittest.TestCase):
         self.assertTrue(described["available"])
         self.assertIn("error", unknown)
         json.dumps({"listing": listing, "search": search, "described": described})
+
+    def test_toolset_impls(self):
+        listing = toolset_list_impl()
+        resolved = toolset_resolve_impl(["company", "agent_loop"])
+        unknown = toolset_resolve_impl(["nope"])
+
+        names = [card["name"] for card in listing["toolsets"]]
+        self.assertIn("company", names)
+        self.assertIn("agent_loop", resolved["resolved"])
+        self.assertIn("web_research", resolved["resolved"])
+        self.assertIn("agent_loop", resolved["available"])
+        self.assertIn("error", unknown)
+        json.dumps({"listing": listing, "resolved": resolved})
 
     def test_build_server_constructs_when_mcp_sdk_is_installed(self):
         if importlib.util.find_spec("mcp") is None:

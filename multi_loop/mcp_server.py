@@ -322,6 +322,25 @@ def capability_describe_impl(name: str) -> dict[str, Any]:
     return registry.describe(name)
 
 
+def toolset_list_impl() -> dict[str, Any]:
+    registry = default_capabilities()
+    return {"toolsets": [registry.describe_toolset(name) for name in registry.toolset_names()]}
+
+
+def toolset_resolve_impl(names: list[str] | str) -> dict[str, Any]:
+    registry = default_capabilities()
+    requested = [names] if isinstance(names, str) else list(names)
+    try:
+        resolved = registry.resolve_names(requested)
+    except KeyError as exc:
+        return {"error": str(exc), "names": requested}
+    return {
+        "names": requested,
+        "resolved": resolved,
+        "available": [name for name in resolved if registry.available(name)],
+    }
+
+
 def doctor_impl(root: str = DEFAULT_ROOT, cwd: str | None = None) -> dict[str, Any]:
     root_path = Path(root)
     cwd_status: dict[str, Any] = {"path": cwd, "provided": cwd is not None}
@@ -482,6 +501,16 @@ def build_server():
     def capability_describe(name: str) -> dict[str, Any]:
         """Return the full capability card, including availability and missing env."""
         return capability_describe_impl(name)
+
+    @mcp.tool()
+    def toolset_list() -> dict[str, Any]:
+        """List capability toolsets with their resolved members."""
+        return toolset_list_impl()
+
+    @mcp.tool()
+    def toolset_resolve(names: list[str]) -> dict[str, Any]:
+        """Resolve toolset/capability names (and all/*) to a flat capability list."""
+        return toolset_resolve_impl(names)
 
     @mcp.tool()
     def doctor(root: str = DEFAULT_ROOT, cwd: str | None = None) -> dict[str, Any]:
