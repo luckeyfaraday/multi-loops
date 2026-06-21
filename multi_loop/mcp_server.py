@@ -153,6 +153,7 @@ def run_generation_blocking_impl(
     *,
     root: str = DEFAULT_ROOT,
     runner: str | None = None,
+    runner_command: str | None = None,
     workspace: str | None = None,
     verify_timeout: float | None = None,
 ) -> dict[str, Any]:
@@ -161,6 +162,7 @@ def run_generation_blocking_impl(
         result = MissionOrchestrator(store=store, workspace=workspace).run_generation(
             mission_id,
             runner_name=runner,
+            runner_command=runner_command,
             verify_timeout_seconds=verify_timeout,
         )
         mission = store.load_mission(mission_id)
@@ -184,6 +186,7 @@ def run_generation_start_impl(
     *,
     root: str = DEFAULT_ROOT,
     runner: str | None = None,
+    runner_command: str | None = None,
     workspace: str | None = None,
     verify_timeout: float | None = None,
 ) -> dict[str, Any]:
@@ -198,6 +201,7 @@ def run_generation_start_impl(
         "statement": mission.statement,
         "root": str(store.root),
         "runner": runner,
+        "runner_command": runner_command,
         "workspace": workspace,
     }
 
@@ -207,6 +211,7 @@ def run_generation_start_impl(
             mission_id,
             root=root,
             runner=runner,
+            runner_command=runner_command,
             workspace=workspace,
             verify_timeout=verify_timeout,
         )
@@ -237,6 +242,7 @@ def run_generation_impl(
     *,
     root: str = DEFAULT_ROOT,
     runner: str | None = None,
+    runner_command: str | None = None,
     workspace: str | None = None,
     verify_timeout: float | None = None,
     detach: bool = True,
@@ -246,6 +252,7 @@ def run_generation_impl(
             mission_id,
             root=root,
             runner=runner,
+            runner_command=runner_command,
             workspace=workspace,
             verify_timeout=verify_timeout,
         )
@@ -253,6 +260,7 @@ def run_generation_impl(
         mission_id,
         root=root,
         runner=runner,
+        runner_command=runner_command,
         workspace=workspace,
         verify_timeout=verify_timeout,
     )
@@ -414,15 +422,20 @@ def build_server():
         mission_id: str,
         root: str = DEFAULT_ROOT,
         runner: str | None = None,
+        runner_command: str | None = None,
         workspace: str | None = None,
         verify_timeout: float | None = None,
         detach: bool = True,
     ) -> dict[str, Any]:
-        """Run one mission generation; detached by default and monitorable by run_id."""
+        """Run one mission generation; detached by default and monitorable by run_id.
+
+        Pass runner_command (e.g. 'claude -p') to drive real agent/shell runners.
+        """
         return run_generation_impl(
             mission_id,
             root=root,
             runner=runner,
+            runner_command=runner_command,
             workspace=workspace,
             verify_timeout=verify_timeout,
             detach=detach,

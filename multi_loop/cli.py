@@ -48,6 +48,11 @@ def main(argv: list[str] | None = None) -> int:
         "--runner",
         help="Runner to force for planned candidates; defaults to the mission preference",
     )
+    run_parser.add_argument(
+        "--runner-command",
+        help="Command for shell/agent_command runners, e.g. 'claude -p' or 'pytest -q'. "
+        "Implies --runner agent_command unless --runner is given.",
+    )
     run_parser.add_argument("--workspace", help="Workspace for runners and verification commands")
     run_parser.add_argument("--verify-timeout", type=float, help="Verification timeout in seconds")
 
@@ -164,6 +169,7 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
         result = orchestrator.run_generation(
             args.mission_id,
             runner_name=args.runner,
+            runner_command=args.runner_command,
             verify_timeout_seconds=args.verify_timeout,
         )
         _print_json(to_dict(result))
