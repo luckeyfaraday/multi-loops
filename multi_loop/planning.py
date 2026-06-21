@@ -11,17 +11,9 @@ from .models import (
     CapabilityRef,
     FitnessScore,
     Mission,
-    PolicyGate,
-    SideEffectClass,
 )
+from .policy import attach_policy_gates, candidate_blocked_now
 from .runners import RunResult
-
-_APPROVAL_REQUIRED = {
-    SideEffectClass.EXTERNAL_WRITE,
-    SideEffectClass.PUBLIC_PUBLISH,
-    SideEffectClass.SPEND_MONEY,
-    SideEffectClass.MESSAGE_PERSON,
-}
 
 _CAPABILITY_RUNNERS: dict[str, str] = {
     "agent_loop": "mock",
@@ -97,7 +89,7 @@ class HeuristicPortfolioPlanner:
             candidate
             for candidate in previous.candidate_loops
             if candidate.state == CandidateState.DISCARDED
-            and not _candidate_blocked_now(candidate, mission, self.capabilities)
+            and not candidate_blocked_now(candidate, mission, self.capabilities)
         ]
 
         for winner in winners:
@@ -178,27 +170,6 @@ class HeuristicPortfolioPlanner:
         )
 
 
-def prepare_candidate(
-    candidate: CandidateLoop,
-    mission: Mission,
-    capabilities: CapabilityRegistry,
-) -> str | None:
-    """Resolve runner/policy gates and return a block reason when execution must not proceed."""
-    _attach_policy_gates(candidate, mission, capabilities)
-
-    for ref in candidate.required_capabilities:
-        capability = capabilities.get(ref.name)
-        if capability is None:
-            if ref.required:
-                return f"Required capability is not registered: {ref.name}."
-            continue
-        if ref.required and not capabilities.available(ref.name):
-            note = capability.availability_check or "requires setup"
-            return f"Required capability unavailable: {ref.name} ({note})."
-
-    return _policy_block_reason(candidate.policy_gates)
-
-
 def preferred_runner(clarifications: dict[str, str]) -> str:
     tools = clarifications.get("preferred_tools", "").lower()
     if "agent_command" in tools:
@@ -217,74 +188,8 @@ def _finalize_candidates(
     for candidate in candidates:
         if candidate.runner == "mock" and default_runner != "mock":
             candidate.runner = default_runner
-        _attach_policy_gates(candidate, mission, capabilities)
+        attach_policy_gates(candidate, mission, capabilities)
     return candidates
-
-
-def _attach_policy_gates(
-    candidate: CandidateLoop,
-    mission: Mission,
-    capabilities: CapabilityRegistry,
-) -> None:
-    gates_by_capability = {gate.capability: gate for gate in candidate.policy_gates}
-    for ref in candidate.required_capabilities:
-        capability = capabilities.get(ref.name)
-        if capability is None or capability.side_effect_class not in _APPROVAL_REQUIRED:
-            continue
-        approved_by = mission.approvals.get(ref.name)
-        approved_at = None if approved_by is None else mission.updated_at
-        gate = gates_by_capability.get(ref.name)
-        if gate is None:
-            candidate.policy_gates.append(
-                PolicyGate(
-                    capability=ref.name,
-                    side_effect_class=capability.side_effect_class,
-                    requires_approval=True,
-                    approved_by=approved_by,
-                    approved_at=approved_at,
-                )
-            )
-        elif gate.approved_by is None and approved_by is not None:
-            # An approval recorded after the gate was first attached should take effect.
-            gate.approved_by = approved_by
-            gate.approved_at = approved_at
-
-
-def _candidate_blocked_now(
-    candidate: CandidateLoop,
-    mission: Mission,
-    capabilities: CapabilityRegistry,
-) -> bool:
-    """Whether the candidate would be blocked under the mission's current state.
-
-    Mirrors the gating in `prepare_candidate` without mutating the candidate, so
-    the planner can decide whether a previously discarded candidate is now
-    runnable (e.g. its capability has since been approved).
-    """
-    for ref in candidate.required_capabilities:
-        capability = capabilities.get(ref.name)
-        if capability is None:
-            if ref.required:
-                return True
-            continue
-        if ref.required and not capabilities.available(ref.name):
-            return True
-        if (
-            capability.side_effect_class in _APPROVAL_REQUIRED
-            and not mission.approvals.get(ref.name)
-        ):
-            return True
-    return False
-
-
-def _policy_block_reason(policy_gates: list[PolicyGate]) -> str | None:
-    for gate in policy_gates:
-        if gate.requires_approval and not gate.approved_by:
-            return (
-                "Policy gate blocked candidate: "
-                f"{gate.capability} requires approval for {gate.side_effect_class.value}."
-            )
-    return None
 
 
 def _base_loop(

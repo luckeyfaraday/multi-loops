@@ -21,7 +21,8 @@ from .models import (
     utc_now_iso,
 )
 from .leases import acquire_mission_lease
-from .planning import FitnessReviewer, HeuristicPortfolioPlanner, prepare_candidate
+from .planning import FitnessReviewer, HeuristicPortfolioPlanner
+from .policy import prepare_candidate
 from .runners import RunRequest, RunResult, RunnerRegistry, default_runner_registry, run_result_to_dict
 from .schedule_util import compute_next_run, initialize_schedule
 from .storage import MissionNotFound, MissionStore

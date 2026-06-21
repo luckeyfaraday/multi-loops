@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from .models import Event, LedgerEntry, Mission, from_dict, to_dict, utc_now_iso
+from .policy import resolve_within
 
 
 class MissionNotFound(FileNotFoundError):
@@ -102,15 +103,13 @@ class MissionStore:
         return events
 
     def write_artifact(self, mission_id: str, relative_path: str, content: str) -> Path:
-        path = self.mission_dir(mission_id) / relative_path
-        _validate_relative_path(relative_path)
+        path = resolve_within(self.mission_dir(mission_id), relative_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return path
 
     def write_result(self, mission_id: str, relative_path: str, data: dict) -> Path:
-        path = self.mission_dir(mission_id) / relative_path
-        _validate_relative_path(relative_path)
+        path = resolve_within(self.mission_dir(mission_id), relative_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_json(path, data)
         return path
@@ -124,9 +123,3 @@ def _atomic_write_json(path: Path, data: dict) -> None:
         handle.flush()
         os.fsync(handle.fileno())  # durably persist before the atomic replace
     tmp_path.replace(path)
-
-
-def _validate_relative_path(relative_path: str) -> None:
-    path = Path(relative_path)
-    if path.is_absolute() or ".." in path.parts:
-        raise ValueError(f"Path must stay inside the mission directory: {relative_path!r}")

@@ -20,7 +20,8 @@ from .models import (
 )
 from .leases import MissionBusy, MissionLease, acquire_mission_lease
 from .orchestrator import GenerationRunResult, MissionOrchestrator, ScheduleNotConfigured
-from .planning import FitnessReviewer, HeuristicPortfolioPlanner, PortfolioPlan, prepare_candidate
+from .planning import FitnessReviewer, HeuristicPortfolioPlanner, PortfolioPlan
+from .policy import PathEscape, prepare_candidate, resolve_within
 from .scheduler import MissionScheduler, SchedulerTickReport, TickResult
 from .onboarding import (
     CapabilityRecommendation,
@@ -66,6 +67,7 @@ __all__ = [
     "MissionOrchestrator",
     "MissionSchedule",
     "MissionStore",
+    "PathEscape",
     "ScheduleNotConfigured",
     "ScheduleState",
     "SchedulerTickReport",
@@ -92,5 +94,6 @@ __all__ = [
     "default_runner_registry",
     "format_capability_brief",
     "parse_schedule",
+    "resolve_within",
     "run_verification",
 ]
