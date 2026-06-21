@@ -19,6 +19,7 @@ from .models import (
     SideEffectClass,
     Toolset,
 )
+from .index import LedgerHit, MissionIndex
 from .leases import MissionBusy, MissionLease, acquire_mission_lease
 from .orchestrator import GenerationRunResult, MissionOrchestrator, ScheduleNotConfigured
 from .planning import FitnessReviewer, HeuristicPortfolioPlanner, PortfolioPlan
@@ -62,8 +63,10 @@ __all__ = [
     "MissionScheduler",
     "PortfolioPlan",
     "LedgerEntry",
+    "LedgerHit",
     "Mission",
     "MissionBusy",
+    "MissionIndex",
     "MissionLease",
     "MissionOrchestrator",
     "MissionSchedule",

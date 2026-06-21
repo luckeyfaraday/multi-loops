@@ -533,6 +533,11 @@ Runtime state is stored under `.multi-loop/runs/<mission-id>/`:
   raise `MissionBusy` (the scheduler reports this as an `already_running` skip).
   The lock is process-held, so a crashed runner releases it automatically.
 
+A derived SQLite index lives at `.multi-loop/index.db`. It is rebuilt from the
+JSON state on demand (the JSON files remain the source of truth) and powers
+cross-mission ledger/mission search and candidate lineage queries via the
+`search` and `lineage` commands and MCP tools.
+
 ## MCP Server
 
 `multi-loop` can also run as an MCP server. The MCP package is optional so the
@@ -569,6 +574,10 @@ The server exposes the mission runtime directly:
   `outreach`, and `media`), and resolution accepts a mix of toolset names,
   capability names, and `all`/`*`, returning a deduped capability list. The CLI
   mirrors this with `multi-loop toolsets [--resolve "company,agent_loop"]`.
+- `search` and `lineage` query the derived SQLite index: `search` finds ledger
+  entries (or mission statements with `missions=true`) across all missions, and
+  `lineage` returns a candidate loop's ancestry. The CLI mirrors these with
+  `multi-loop search "<text>" [--missions]` and `multi-loop lineage <loop-id>`.
 
 Detached MCP run logs live under `.multi-loop/mcp-runs/<run-id>/` with
 `events.jsonl`, `status.json`, and `result.json`. Mission state remains under

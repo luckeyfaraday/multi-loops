@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .capabilities import default_capabilities
+from .index import MissionIndex
 from .models import to_dict
 from .onboarding import OnboardingEngine, collect_answers, format_capability_brief
 from .orchestrator import MissionOrchestrator, ScheduleNotConfigured
@@ -88,6 +89,16 @@ def main(argv: list[str] | None = None) -> int:
         "--resolve",
         help="Resolve toolset/capability names (comma- or space-separated, or all) to capabilities",
     )
+
+    search_parser = subparsers.add_parser("search", help="Search the mission ledger (or missions) by text")
+    search_parser.add_argument("query", help="Text to search for")
+    search_parser.add_argument(
+        "--missions", action="store_true", help="Search mission statements instead of the ledger"
+    )
+    search_parser.add_argument("--limit", type=int, default=20, help="Maximum results")
+
+    lineage_parser = subparsers.add_parser("lineage", help="Show a candidate loop's ancestry")
+    lineage_parser.add_argument("candidate_id", help="Candidate loop ID")
 
     subparsers.add_parser("tick", help="Run scheduled mission ticks that are due")
 
@@ -261,6 +272,23 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
         else:
             _print_json(
                 {"toolsets": [registry.describe_toolset(name) for name in registry.toolset_names()]}
+            )
+        return 0
+
+    if args.command in {"search", "lineage"}:
+        index = MissionIndex(args.root)
+        index.rebuild(store)  # derived index; refresh from JSON before querying
+        if args.command == "search":
+            if args.missions:
+                _print_json(
+                    {"query": args.query, "missions": index.search_missions(args.query, limit=args.limit)}
+                )
+            else:
+                hits = index.search_ledger(args.query, limit=args.limit)
+                _print_json({"query": args.query, "hits": to_dict(hits)})
+        else:
+            _print_json(
+                {"candidate_id": args.candidate_id, "ancestors": index.lineage(args.candidate_id)}
             )
         return 0
 
