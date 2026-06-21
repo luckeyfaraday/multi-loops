@@ -503,6 +503,37 @@ Runtime state is stored under `.multi-loop/runs/<mission-id>/`:
 - `artifacts/`: candidate outputs and generation synthesis.
 - `results/`: structured candidate run results.
 
+## MCP Server
+
+`multi-loop` can also run as an MCP server. The MCP package is optional so the
+core CLI and tests stay dependency-free:
+
+```bash
+pip install -e ".[mcp]"
+python3 -m multi_loop.mcp_server
+```
+
+If installed as a package, the console script is available too:
+
+```bash
+multi-loop-mcp
+```
+
+The server exposes the mission runtime directly:
+
+- `onboard` builds an onboarding plan and can create the mission.
+- `create_mission`, `mission_status`, `list_missions`, and `approve_capability`
+  manage persisted mission state.
+- `run_generation` runs one generation. It detaches by default and returns a
+  `run_id` immediately.
+- `run_status`, `run_tail`, `run_result`, and `run_list` monitor detached runs.
+- `tick` runs scheduled mission ticks that are currently due.
+- `list_backends` and `doctor` report local runner/capability and storage health.
+
+Detached MCP run logs live under `.multi-loop/mcp-runs/<run-id>/` with
+`events.jsonl`, `status.json`, and `result.json`. Mission state remains under
+`.multi-loop/runs/<mission-id>/`.
+
 ## Program Files
 
 The `program.md` idea from autoresearch maps well to multi-loop, but it should be

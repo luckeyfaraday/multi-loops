@@ -23,6 +23,9 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+mcp = ["mcp>=1.0"]
+
 [project.urls]
 Homepage = "https://github.com/luckeyfaraday/multi-loops"
 Repository = "https://github.com/luckeyfaraday/multi-loops"
@@ -30,6 +33,7 @@ Issues = "https://github.com/luckeyfaraday/multi-loops/issues"
 
 [project.scripts]
 multi-loop = "multi_loop.cli:main"
+multi-loop-mcp = "multi_loop.mcp_server:main"
 
 [tool.setuptools.packages.find]
 include = ["multi_loop*"]
