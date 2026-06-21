@@ -170,9 +170,16 @@ class MissionOrchestrator:
         mission_id: str,
         *,
         runner_name: str | None = None,
+        runner_command: str | None = None,
         verify_timeout_seconds: float | None = None,
     ) -> GenerationRunResult:
         """Run one generation under an exclusive mission lease.
+
+        ``runner_command`` makes the run do real work: it is applied to every
+        candidate's ``runner_config`` so the ``shell``/``agent_command`` runners
+        execute it (the latter pipes each candidate's self-contained prompt to
+        the command on stdin). When a command is given without an explicit
+        ``runner_name``, the runner defaults to ``agent_command``.
 
         Raises ``MissionBusy`` if another runner (CLI, MCP, scheduler) already
         holds the mission, so concurrent callers skip rather than producing a
@@ -185,6 +192,7 @@ class MissionOrchestrator:
             return self._run_generation_locked(
                 mission_id,
                 runner_name=runner_name,
+                runner_command=runner_command,
                 verify_timeout_seconds=verify_timeout_seconds,
             )
 
@@ -193,15 +201,22 @@ class MissionOrchestrator:
         mission_id: str,
         *,
         runner_name: str | None = None,
+        runner_command: str | None = None,
         verify_timeout_seconds: float | None = None,
     ) -> GenerationRunResult:
         mission = self.store.load_mission(mission_id)
         generation_index = len(mission.generations)
         portfolio = self.planner.plan(mission, generation_index)
         candidates = portfolio.candidates
-        if runner_name:
+        effective_runner = runner_name
+        if runner_command and not effective_runner:
+            effective_runner = "agent_command"  # real-agent default when a command is supplied
+        if effective_runner:
             for candidate in candidates:
-                candidate.runner = runner_name
+                candidate.runner = effective_runner
+        if runner_command:
+            for candidate in candidates:
+                candidate.runner_config = {**candidate.runner_config, "command": runner_command}
 
         generation = Generation(
             index=generation_index,

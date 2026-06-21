@@ -467,6 +467,19 @@ Note: in the current MVP, candidate loops within a generation run sequentially, 
 in parallel. The parallel-population behavior described above is the design target,
 not yet the runtime behavior.
 
+By default a run uses the deterministic `MockRunner`. To make a generation do real
+work, pass `--runner-command`: it is applied to every candidate's runner config so
+the `shell`/`agent_command` runners execute it. With `agent_command` (the default
+when a command is given), each candidate's self-contained prompt is piped to the
+command on stdin, so a real CLI agent works each candidate loop:
+
+```bash
+# real agents work each candidate loop in the generation:
+python3 -m multi_loop run <mission-id> --runner-command "claude -p"
+# or run a deterministic shell command per candidate:
+python3 -m multi_loop run <mission-id> --runner shell --runner-command "pytest -q"
+```
+
 CLI examples:
 
 ```bash

@@ -49,6 +49,39 @@ class MissionOrchestratorTests(unittest.TestCase):
         self.assertEqual(generation.selected_lineage, [])
         self.assertTrue(all(candidate.state.value == "failed" for candidate in generation.candidate_loops))
 
+    def test_runner_command_executes_for_real(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MissionStore(Path(tmpdir) / ".multi-loop")
+            orchestrator = MissionOrchestrator(store=store)
+            mission = orchestrator.create_mission("Demo a real run", "Produce output")
+
+            orchestrator.run_generation(
+                mission.id, runner_name="shell", runner_command="echo MULTILOOP_OK"
+            )
+            loaded = store.load_mission(mission.id)
+            generation = loaded.generations[0]
+            # The shell command's real output is captured in the candidate artifact.
+            first = generation.candidate_loops[0]
+            artifact_text = (store.mission_dir(mission.id) / first.artifacts[0].path).read_text()
+
+        self.assertTrue(all(c.runner == "shell" for c in generation.candidate_loops))
+        self.assertTrue(all(c.state.value == "completed" for c in generation.candidate_loops))
+        self.assertIn("MULTILOOP_OK", artifact_text)
+
+    def test_runner_command_defaults_to_agent_command(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MissionStore(Path(tmpdir) / ".multi-loop")
+            orchestrator = MissionOrchestrator(store=store)
+            mission = orchestrator.create_mission("Demo agent default", "Produce output")
+
+            # `cat` echoes the candidate prompt piped to stdin and exits 0.
+            orchestrator.run_generation(mission.id, runner_command="cat")
+            loaded = store.load_mission(mission.id)
+            generation = loaded.generations[0]
+
+        self.assertTrue(all(c.runner == "agent_command" for c in generation.candidate_loops))
+        self.assertTrue(all(c.state.value == "completed" for c in generation.candidate_loops))
+
 
 if __name__ == "__main__":
     unittest.main()

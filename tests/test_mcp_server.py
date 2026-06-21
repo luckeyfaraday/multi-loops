@@ -77,6 +77,24 @@ class McpServerTests(unittest.TestCase):
         self.assertIn("run_finished", kinds)
         self.assertTrue(any(item["run_id"] == run_id for item in listing["runs"]))
 
+    def test_run_generation_impl_threads_runner_command(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = str(Path(tmpdir) / ".multi-loop")
+            created = create_mission_impl("Real MCP run", "Produce output", root=root)
+            run = run_generation_impl(
+                created["mission_id"],
+                root=root,
+                runner="shell",
+                runner_command="echo MCP_REAL_RUN",
+                detach=False,
+            )
+            status = mission_status_impl(created["mission_id"], root=root)
+
+        candidates = status["mission"]["generations"][0]["candidate_loops"]
+        self.assertEqual(run["generation_index"], 0)
+        self.assertTrue(all(c["runner"] == "shell" for c in candidates))
+        self.assertTrue(all(c["state"] == "completed" for c in candidates))
+
     def test_onboard_impl_can_plan_without_creating(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = str(Path(tmpdir) / ".multi-loop")
