@@ -19,6 +19,9 @@ class RunRequest:
     candidate: CandidateLoop
     mission_dir: Path
     workspace: Path | None = None
+    # Safety directive constraining a spawned agent's outward actions; injected
+    # into the agent prompt by the orchestrator (see policy.side_effect_directive).
+    safety_directive: str = ""
 
 
 @dataclass(slots=True)
@@ -260,8 +263,10 @@ def _format_shell_output(command: str, exit_code: int | None, stdout: str, stder
 
 def _agent_prompt(request: RunRequest) -> str:
     candidate = request.candidate
+    safety = f"{request.safety_directive}\n\n" if request.safety_directive else ""
     return (
         "You are running one candidate loop inside a multi-loop mission.\n\n"
+        f"{safety}"
         f"Mission: {request.mission.statement}\n"
         f"Mission success criteria: {request.mission.success_criteria}\n\n"
         f"Candidate goal: {candidate.goal}\n"

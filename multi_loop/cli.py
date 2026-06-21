@@ -54,6 +54,19 @@ def main(argv: list[str] | None = None) -> int:
         help="Command for shell/agent_command runners, e.g. 'claude -p' or 'pytest -q'. "
         "Implies --runner agent_command unless --runner is given.",
     )
+    run_parser.add_argument(
+        "--allow-side-effects",
+        action="store_true",
+        help="Permit outward-facing agent actions (merge/publish/spend). Default: deny "
+        "(spawned agents are told to stay read-only and local).",
+    )
+    run_parser.add_argument(
+        "--verify",
+        action="append",
+        metavar="COMMAND",
+        help="Verification command applied to each candidate (repeatable). When set, "
+        "it is authoritative: success reflects the command's exit code, not the runner's.",
+    )
     run_parser.add_argument("--workspace", help="Workspace for runners and verification commands")
     run_parser.add_argument("--verify-timeout", type=float, help="Verification timeout in seconds")
 
@@ -181,6 +194,8 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
             args.mission_id,
             runner_name=args.runner,
             runner_command=args.runner_command,
+            allow_side_effects=args.allow_side_effects,
+            verification=args.verify,
             verify_timeout_seconds=args.verify_timeout,
         )
         _print_json(to_dict(result))

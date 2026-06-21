@@ -267,9 +267,11 @@ def _matches(text: str, *needles: str) -> bool:
 
 
 def _verification_score(result: RunResult) -> float:
+    # Reward verifiable evidence and give nothing for an unverified self-report,
+    # so a candidate that proves its work outscores one that merely claims it.
     if not result.verification:
-        return 0.05
-    return 0.10 if all(item.success for item in result.verification) else 0.0
+        return 0.0
+    return 0.15 if all(item.success for item in result.verification) else 0.0
 
 
 class FitnessReviewer:

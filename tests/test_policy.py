@@ -14,6 +14,7 @@ from multi_loop import (
     SideEffectClass,
     prepare_candidate,
     resolve_within,
+    side_effect_directive,
 )
 from multi_loop.policy import candidate_blocked_now
 
@@ -69,6 +70,34 @@ class PolicyGateTests(unittest.TestCase):
 
         self.assertIsNone(prepare_candidate(candidate, mission, registry))
         self.assertEqual(candidate.policy_gates, [])
+
+
+class SideEffectDirectiveTests(unittest.TestCase):
+    def test_denies_outward_actions_by_default(self):
+        registry = _registry_with_available(SideEffectClass.READ_ONLY)
+        mission = Mission(statement="m", success_criteria="c")
+        directive = side_effect_directive(_candidate(), mission, registry)
+        self.assertIn("NONE PERMITTED", directive)
+        self.assertIn("Do NOT merge", directive)
+
+    def test_allows_when_explicitly_flagged(self):
+        registry = _registry_with_available(SideEffectClass.READ_ONLY)
+        mission = Mission(statement="m", success_criteria="c")
+        directive = side_effect_directive(_candidate(), mission, registry, allow_side_effects=True)
+        self.assertIn("APPROVED", directive)
+        self.assertIn("verifiable handle", directive)
+
+    def test_allows_with_approved_side_effecting_capability(self):
+        registry = _registry_with_available(SideEffectClass.EXTERNAL_WRITE)
+        mission = Mission(statement="m", success_criteria="c", approvals={"publish_site": "user"})
+        directive = side_effect_directive(_candidate(), mission, registry)
+        self.assertIn("APPROVED", directive)
+
+    def test_unapproved_side_effecting_capability_still_denies(self):
+        registry = _registry_with_available(SideEffectClass.EXTERNAL_WRITE)
+        mission = Mission(statement="m", success_criteria="c")  # no approval recorded
+        directive = side_effect_directive(_candidate(), mission, registry)
+        self.assertIn("NONE PERMITTED", directive)
 
 
 class ResolveWithinTests(unittest.TestCase):
