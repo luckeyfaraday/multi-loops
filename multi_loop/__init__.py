@@ -23,7 +23,7 @@ from .index import LedgerHit, MissionIndex
 from .leases import MissionBusy, MissionLease, acquire_mission_lease
 from .orchestrator import GenerationRunResult, MissionOrchestrator, ScheduleNotConfigured
 from .planning import FitnessReviewer, HeuristicPortfolioPlanner, PortfolioPlan
-from .policy import PathEscape, prepare_candidate, resolve_within
+from .policy import PathEscape, prepare_candidate, resolve_within, side_effect_directive
 from .scheduler import MissionScheduler, SchedulerTickReport, TickResult
 from .onboarding import (
     CapabilityRecommendation,
@@ -102,4 +102,5 @@ __all__ = [
     "parse_schedule",
     "resolve_within",
     "run_verification",
+    "side_effect_directive",
 ]

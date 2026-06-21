@@ -22,7 +22,7 @@ from .models import (
 )
 from .leases import acquire_mission_lease
 from .planning import FitnessReviewer, HeuristicPortfolioPlanner
-from .policy import prepare_candidate
+from .policy import prepare_candidate, side_effect_directive
 from .runners import RunRequest, RunResult, RunnerRegistry, default_runner_registry, run_result_to_dict
 from .schedule_util import compute_next_run, initialize_schedule
 from .storage import MissionNotFound, MissionStore
@@ -171,6 +171,7 @@ class MissionOrchestrator:
         *,
         runner_name: str | None = None,
         runner_command: str | None = None,
+        allow_side_effects: bool = False,
         verify_timeout_seconds: float | None = None,
     ) -> GenerationRunResult:
         """Run one generation under an exclusive mission lease.
@@ -180,6 +181,11 @@ class MissionOrchestrator:
         execute it (the latter pipes each candidate's self-contained prompt to
         the command on stdin). When a command is given without an explicit
         ``runner_name``, the runner defaults to ``agent_command``.
+
+        ``allow_side_effects`` lifts the default deny posture: by default every
+        spawned agent is instructed to stay read-only and local, so a candidate
+        cannot take outward-facing actions (merge/publish/spend) without explicit
+        approval.
 
         Raises ``MissionBusy`` if another runner (CLI, MCP, scheduler) already
         holds the mission, so concurrent callers skip rather than producing a
@@ -193,6 +199,7 @@ class MissionOrchestrator:
                 mission_id,
                 runner_name=runner_name,
                 runner_command=runner_command,
+                allow_side_effects=allow_side_effects,
                 verify_timeout_seconds=verify_timeout_seconds,
             )
 
@@ -202,6 +209,7 @@ class MissionOrchestrator:
         *,
         runner_name: str | None = None,
         runner_command: str | None = None,
+        allow_side_effects: bool = False,
         verify_timeout_seconds: float | None = None,
     ) -> GenerationRunResult:
         mission = self.store.load_mission(mission_id)
@@ -233,7 +241,11 @@ class MissionOrchestrator:
         self._append_event(
             mission,
             "generation_started",
-            {"candidate_count": len(candidates), "mutations": portfolio.mutations},
+            {
+                "candidate_count": len(candidates),
+                "mutations": portfolio.mutations,
+                "side_effects": "allowed" if allow_side_effects else "denied",
+            },
             generation_index,
         )
         events_written += 1
@@ -259,7 +271,9 @@ class MissionOrchestrator:
                 )
             else:
                 try:
-                    result = self._run_candidate(mission, generation_index, candidate)
+                    result = self._run_candidate(
+                        mission, generation_index, candidate, allow_side_effects
+                    )
                     self._apply_verification(mission, candidate, result, verify_timeout_seconds)
                 except Exception as exc:  # isolate one candidate's crash from the generation
                     result = RunResult(
@@ -356,7 +370,13 @@ class MissionOrchestrator:
             blocked_candidates=blocked_candidates,
         )
 
-    def _run_candidate(self, mission: Mission, generation_index: int, candidate: CandidateLoop) -> RunResult:
+    def _run_candidate(
+        self,
+        mission: Mission,
+        generation_index: int,
+        candidate: CandidateLoop,
+        allow_side_effects: bool,
+    ) -> RunResult:
         runner = self.runners.require(candidate.runner)
         request = RunRequest(
             mission=mission,
@@ -364,6 +384,9 @@ class MissionOrchestrator:
             candidate=candidate,
             mission_dir=self.store.mission_dir(mission.id),
             workspace=self.workspace,
+            safety_directive=side_effect_directive(
+                candidate, mission, self.capabilities, allow_side_effects=allow_side_effects
+            ),
         )
         return runner.run(request)
 

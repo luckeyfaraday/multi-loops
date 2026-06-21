@@ -155,6 +155,7 @@ def run_generation_blocking_impl(
     root: str = DEFAULT_ROOT,
     runner: str | None = None,
     runner_command: str | None = None,
+    allow_side_effects: bool = False,
     workspace: str | None = None,
     verify_timeout: float | None = None,
 ) -> dict[str, Any]:
@@ -164,6 +165,7 @@ def run_generation_blocking_impl(
             mission_id,
             runner_name=runner,
             runner_command=runner_command,
+            allow_side_effects=allow_side_effects,
             verify_timeout_seconds=verify_timeout,
         )
         mission = store.load_mission(mission_id)
@@ -188,6 +190,7 @@ def run_generation_start_impl(
     root: str = DEFAULT_ROOT,
     runner: str | None = None,
     runner_command: str | None = None,
+    allow_side_effects: bool = False,
     workspace: str | None = None,
     verify_timeout: float | None = None,
 ) -> dict[str, Any]:
@@ -203,6 +206,7 @@ def run_generation_start_impl(
         "root": str(store.root),
         "runner": runner,
         "runner_command": runner_command,
+        "allow_side_effects": allow_side_effects,
         "workspace": workspace,
     }
 
@@ -213,6 +217,7 @@ def run_generation_start_impl(
             root=root,
             runner=runner,
             runner_command=runner_command,
+            allow_side_effects=allow_side_effects,
             workspace=workspace,
             verify_timeout=verify_timeout,
         )
@@ -244,6 +249,7 @@ def run_generation_impl(
     root: str = DEFAULT_ROOT,
     runner: str | None = None,
     runner_command: str | None = None,
+    allow_side_effects: bool = False,
     workspace: str | None = None,
     verify_timeout: float | None = None,
     detach: bool = True,
@@ -254,6 +260,7 @@ def run_generation_impl(
             root=root,
             runner=runner,
             runner_command=runner_command,
+            allow_side_effects=allow_side_effects,
             workspace=workspace,
             verify_timeout=verify_timeout,
         )
@@ -262,6 +269,7 @@ def run_generation_impl(
         root=root,
         runner=runner,
         runner_command=runner_command,
+        allow_side_effects=allow_side_effects,
         workspace=workspace,
         verify_timeout=verify_timeout,
     )
@@ -444,6 +452,7 @@ def build_server():
         root: str = DEFAULT_ROOT,
         runner: str | None = None,
         runner_command: str | None = None,
+        allow_side_effects: bool = False,
         workspace: str | None = None,
         verify_timeout: float | None = None,
         detach: bool = True,
@@ -451,12 +460,15 @@ def build_server():
         """Run one mission generation; detached by default and monitorable by run_id.
 
         Pass runner_command (e.g. 'claude -p') to drive real agent/shell runners.
+        Side effects are denied by default; set allow_side_effects to permit
+        outward-facing agent actions.
         """
         return run_generation_impl(
             mission_id,
             root=root,
             runner=runner,
             runner_command=runner_command,
+            allow_side_effects=allow_side_effects,
             workspace=workspace,
             verify_timeout=verify_timeout,
             detach=detach,

@@ -103,6 +103,57 @@ def candidate_blocked_now(
     return False
 
 
+def has_approved_side_effect(
+    candidate: CandidateLoop,
+    mission: Mission,
+    capabilities: CapabilityRegistry,
+) -> bool:
+    """Whether the candidate has an approved side-effecting capability."""
+    for ref in candidate.required_capabilities:
+        capability = capabilities.get(ref.name)
+        if (
+            capability is not None
+            and capability.side_effect_class in APPROVAL_REQUIRED
+            and mission.approvals.get(ref.name)
+        ):
+            return True
+    return False
+
+
+_DENY_SIDE_EFFECTS = (
+    "SIDE EFFECTS: NONE PERMITTED. Stay read-only and local. Do NOT merge, close, "
+    "publish, post, upload, send messages, spend money, delete, or otherwise mutate "
+    "any remote or external service. Inspect, analyze, and plan only; leave every "
+    "outward-facing or irreversible action to an approved execution loop."
+)
+_ALLOW_SIDE_EFFECTS = (
+    "SIDE EFFECTS: APPROVED for this run. You may take the outward-facing actions the "
+    "mission requires. For each such action you MUST return a verifiable handle (URL, "
+    "object ID, status code, receipt, or absolute path) so the parent loop can confirm "
+    "it actually happened — unconfirmed claims are treated as failures."
+)
+
+
+def side_effect_directive(
+    candidate: CandidateLoop,
+    mission: Mission,
+    capabilities: CapabilityRegistry,
+    *,
+    allow_side_effects: bool = False,
+) -> str:
+    """Return the safety directive that bounds a spawned agent's outward actions.
+
+    The default posture is deny: a candidate's runner is told to stay read-only
+    and local regardless of what the spawned agent *could* do, so a nominally
+    ``local_write`` candidate cannot quietly merge PRs or spend money. The
+    constraint is lifted only when side effects are explicitly approved — via
+    ``allow_side_effects`` or an approved side-effecting capability.
+    """
+    if allow_side_effects or has_approved_side_effect(candidate, mission, capabilities):
+        return _ALLOW_SIDE_EFFECTS
+    return _DENY_SIDE_EFFECTS
+
+
 def policy_block_reason(policy_gates: list[PolicyGate]) -> str | None:
     for gate in policy_gates:
         if gate.requires_approval and not gate.approved_by:

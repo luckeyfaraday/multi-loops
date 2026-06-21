@@ -82,6 +82,36 @@ class MissionOrchestratorTests(unittest.TestCase):
         self.assertTrue(all(c.runner == "agent_command" for c in generation.candidate_loops))
         self.assertTrue(all(c.state.value == "completed" for c in generation.candidate_loops))
 
+    def test_spawned_agent_is_denied_side_effects_by_default(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MissionStore(Path(tmpdir) / ".multi-loop")
+            orchestrator = MissionOrchestrator(store=store)
+            mission = orchestrator.create_mission("Manage github PRs", "Clear the backlog")
+
+            # `cat` echoes the prompt the agent would receive, so the artifact
+            # captures exactly what the spawned agent was instructed.
+            orchestrator.run_generation(mission.id, runner_command="cat")
+            loaded = store.load_mission(mission.id)
+            art = loaded.generations[0].candidate_loops[0].artifacts[0].path
+            prompt = (store.mission_dir(mission.id) / art).read_text()
+
+        self.assertIn("SIDE EFFECTS: NONE PERMITTED", prompt)
+        self.assertIn("Do NOT merge", prompt)
+
+    def test_allow_side_effects_lifts_the_directive(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MissionStore(Path(tmpdir) / ".multi-loop")
+            orchestrator = MissionOrchestrator(store=store)
+            mission = orchestrator.create_mission("Manage github PRs", "Clear the backlog")
+
+            orchestrator.run_generation(mission.id, runner_command="cat", allow_side_effects=True)
+            loaded = store.load_mission(mission.id)
+            art = loaded.generations[0].candidate_loops[0].artifacts[0].path
+            prompt = (store.mission_dir(mission.id) / art).read_text()
+
+        self.assertIn("SIDE EFFECTS: APPROVED", prompt)
+        self.assertNotIn("NONE PERMITTED", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
