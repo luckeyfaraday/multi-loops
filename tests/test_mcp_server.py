@@ -19,8 +19,10 @@ from multi_loop.mcp_server import (
     run_generation_impl,
     run_list_impl,
     run_result_impl,
+    lineage_impl,
     run_status_impl,
     run_tail_impl,
+    search_impl,
     toolset_list_impl,
     toolset_resolve_impl,
 )
@@ -128,6 +130,26 @@ class McpServerTests(unittest.TestCase):
         self.assertIn("agent_loop", resolved["available"])
         self.assertIn("error", unknown)
         json.dumps({"listing": listing, "resolved": resolved})
+
+    def test_search_and_lineage_impls(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = str(Path(tmpdir) / ".multi-loop")
+            created = create_mission_impl("Build a SaaS product", "Ship an MVP", root=root)
+            mission_id = created["mission_id"]
+            run_generation_impl(mission_id, root=root, detach=False)
+
+            ledger_search = search_impl("synthesized", root=root)
+            mission_search = search_impl("SaaS", root=root, missions=True)
+            status = mission_status_impl(mission_id, root=root)
+
+        candidate_id = status["mission"]["generations"][0]["candidate_loops"][0]["id"]
+        self.assertTrue(ledger_search["hits"])
+        self.assertEqual(mission_search["missions"][0]["id"], mission_id)
+        # gen-0 candidates have no parents.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            empty = lineage_impl(candidate_id, root=str(Path(tmpdir) / ".multi-loop"))
+        self.assertEqual(empty["ancestors"], [])
+        json.dumps({"ledger": ledger_search, "missions": mission_search})
 
     def test_build_server_constructs_when_mcp_sdk_is_installed(self):
         if importlib.util.find_spec("mcp") is None:

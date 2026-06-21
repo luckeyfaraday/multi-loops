@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .capabilities import default_capabilities
+from .index import MissionIndex
 from .mcp_runs import MANAGER, mcp_runs_dir
 from .models import to_dict
 from .onboarding import OnboardingEngine, format_capability_brief
@@ -341,6 +342,26 @@ def toolset_resolve_impl(names: list[str] | str) -> dict[str, Any]:
     }
 
 
+def search_impl(
+    query: str,
+    *,
+    root: str = DEFAULT_ROOT,
+    missions: bool = False,
+    limit: int = 20,
+) -> dict[str, Any]:
+    index = MissionIndex(root)
+    index.rebuild(_store(root))  # derived index; refresh from JSON before querying
+    if missions:
+        return {"query": query, "missions": index.search_missions(query, limit=limit)}
+    return {"query": query, "hits": to_dict(index.search_ledger(query, limit=limit))}
+
+
+def lineage_impl(candidate_id: str, *, root: str = DEFAULT_ROOT) -> dict[str, Any]:
+    index = MissionIndex(root)
+    index.rebuild(_store(root))
+    return {"candidate_id": candidate_id, "ancestors": index.lineage(candidate_id)}
+
+
 def doctor_impl(root: str = DEFAULT_ROOT, cwd: str | None = None) -> dict[str, Any]:
     root_path = Path(root)
     cwd_status: dict[str, Any] = {"path": cwd, "provided": cwd is not None}
@@ -511,6 +532,21 @@ def build_server():
     def toolset_resolve(names: list[str]) -> dict[str, Any]:
         """Resolve toolset/capability names (and all/*) to a flat capability list."""
         return toolset_resolve_impl(names)
+
+    @mcp.tool()
+    def search(
+        query: str,
+        root: str = DEFAULT_ROOT,
+        missions: bool = False,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Search the mission ledger (or mission statements) across all missions."""
+        return search_impl(query, root=root, missions=missions, limit=limit)
+
+    @mcp.tool()
+    def lineage(candidate_id: str, root: str = DEFAULT_ROOT) -> dict[str, Any]:
+        """Return a candidate loop's ancestry (parents, grandparents, ...)."""
+        return lineage_impl(candidate_id, root=root)
 
     @mcp.tool()
     def doctor(root: str = DEFAULT_ROOT, cwd: str | None = None) -> dict[str, Any]:
