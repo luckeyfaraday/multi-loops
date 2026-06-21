@@ -172,6 +172,7 @@ class MissionOrchestrator:
         runner_name: str | None = None,
         runner_command: str | None = None,
         allow_side_effects: bool = False,
+        verification: list[str] | None = None,
         verify_timeout_seconds: float | None = None,
     ) -> GenerationRunResult:
         """Run one generation under an exclusive mission lease.
@@ -200,6 +201,7 @@ class MissionOrchestrator:
                 runner_name=runner_name,
                 runner_command=runner_command,
                 allow_side_effects=allow_side_effects,
+                verification=verification,
                 verify_timeout_seconds=verify_timeout_seconds,
             )
 
@@ -210,6 +212,7 @@ class MissionOrchestrator:
         runner_name: str | None = None,
         runner_command: str | None = None,
         allow_side_effects: bool = False,
+        verification: list[str] | None = None,
         verify_timeout_seconds: float | None = None,
     ) -> GenerationRunResult:
         mission = self.store.load_mission(mission_id)
@@ -225,6 +228,9 @@ class MissionOrchestrator:
         if runner_command:
             for candidate in candidates:
                 candidate.runner_config = {**candidate.runner_config, "command": runner_command}
+        if verification:
+            for candidate in candidates:
+                candidate.verification = list(verification)
 
         generation = Generation(
             index=generation_index,
@@ -402,8 +408,17 @@ class MissionOrchestrator:
         cwd = self.workspace or self.store.mission_dir(mission.id)
         report = run_verification(candidate.verification, cwd=cwd, timeout_seconds=verify_timeout_seconds)
         result.verification = report.results
-        if not report.success:
-            result.success = False
+        # Verification is authoritative when configured: it decides success
+        # regardless of the runner's exit code. This rescues a candidate that
+        # did the work but whose runner was killed (e.g. timed out before it
+        # could report), and fails one that exited cleanly but cannot prove its
+        # claimed side effects — so success reflects evidence, not self-report.
+        runner_succeeded = result.success
+        result.success = report.success
+        result.metadata["verified"] = report.success
+        if report.success and not runner_succeeded:
+            result.summary = f"{result.summary} (runner did not exit cleanly; verification confirmed the work)."
+        elif not report.success:
             result.summary = f"{result.summary} Verification failed."
 
     def _append_event(

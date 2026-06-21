@@ -82,6 +82,38 @@ class MissionOrchestratorTests(unittest.TestCase):
         self.assertTrue(all(c.runner == "agent_command" for c in generation.candidate_loops))
         self.assertTrue(all(c.state.value == "completed" for c in generation.candidate_loops))
 
+    def test_verification_rescues_a_failed_runner(self):
+        # The runner exits non-zero (e.g. timed out after doing the work), but
+        # verification confirms the result — success should reflect the evidence.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MissionStore(Path(tmpdir) / ".multi-loop")
+            orchestrator = MissionOrchestrator(store=store)
+            mission = orchestrator.create_mission("verify rescue", "ok")
+
+            orchestrator.run_generation(
+                mission.id, runner_name="shell", runner_command="false", verification=["true"]
+            )
+            generation = store.load_mission(mission.id).generations[0]
+
+        self.assertTrue(all(c.state.value == "completed" for c in generation.candidate_loops))
+        self.assertGreaterEqual(len(generation.selected_lineage), 1)
+        self.assertEqual(generation.candidate_loops[0].fitness.rubric["verification"], 0.15)
+
+    def test_verification_revokes_an_unverified_success(self):
+        # The runner exits 0 but cannot prove its claimed work — fail it.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MissionStore(Path(tmpdir) / ".multi-loop")
+            orchestrator = MissionOrchestrator(store=store)
+            mission = orchestrator.create_mission("verify fail", "ok")
+
+            orchestrator.run_generation(
+                mission.id, runner_name="shell", runner_command="true", verification=["false"]
+            )
+            generation = store.load_mission(mission.id).generations[0]
+
+        self.assertTrue(all(c.state.value == "failed" for c in generation.candidate_loops))
+        self.assertEqual(generation.selected_lineage, [])
+
     def test_spawned_agent_is_denied_side_effects_by_default(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             store = MissionStore(Path(tmpdir) / ".multi-loop")

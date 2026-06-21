@@ -480,6 +480,26 @@ python3 -m multi_loop run <mission-id> --runner-command "claude -p"
 python3 -m multi_loop run <mission-id> --runner shell --runner-command "pytest -q"
 ```
 
+Real runs are governed by two safety rails:
+
+- **Side effects are denied by default.** Every spawned agent is instructed to stay
+  read-only and local — no merging, publishing, sending, spending, or mutating remote
+  services. Pass `--allow-side-effects` (or approve a side-effecting capability) to
+  permit outward-facing actions, in which case the agent must return verifiable
+  handles for each. This stops a nominally `local_write` candidate from quietly taking
+  irreversible actions.
+- **Verification is authoritative.** Pass `--verify "<command>"` (repeatable) and the
+  command's exit code — not the runner's — decides success. This rescues a candidate
+  that did the work but whose runner was killed (e.g. timed out before reporting), and
+  fails one that exited cleanly but cannot prove its claimed work, so fitness reflects
+  evidence rather than the worker's self-report.
+
+```bash
+# let agents act, and only count a candidate as successful if the PR is actually merged:
+python3 -m multi_loop run <mission-id> --runner-command "claude -p" --allow-side-effects \
+  --verify "gh pr view 42 --json state -q .state | grep -qx MERGED"
+```
+
 CLI examples:
 
 ```bash
