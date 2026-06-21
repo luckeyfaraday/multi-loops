@@ -129,12 +129,33 @@ class Generation:
     synthesis: str | None = None
 
 
+class ScheduleState(str, Enum):
+    """Lifecycle state for an unattended mission schedule."""
+
+    SCHEDULED = "scheduled"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    ERROR = "error"
+
+
 @dataclass(slots=True)
 class MissionSchedule:
     expression: str
     next_run_at: str | None = None
     max_generation_steps: int | None = None
     enabled: bool = True
+    # Operational state borrowed from Hermes' unattended-job model so scheduled
+    # missions can be paused, report their last outcome, and surface errors
+    # instead of being silently disabled.
+    kind: str | None = None  # "once" | "interval" | "cron"
+    display: str = ""
+    state: ScheduleState = ScheduleState.SCHEDULED
+    paused_at: str | None = None
+    paused_reason: str | None = None
+    last_run_at: str | None = None
+    last_status: str | None = None  # "ok" | "error"
+    last_error: str | None = None
+    last_delivery_error: str | None = None
 
 
 @dataclass(slots=True)

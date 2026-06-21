@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .models import to_dict
 from .onboarding import OnboardingEngine, collect_answers, format_capability_brief
-from .orchestrator import MissionOrchestrator
+from .orchestrator import MissionOrchestrator, ScheduleNotConfigured
 from .scheduler import MissionScheduler
 from .storage import MissionNotFound, MissionStore
 
@@ -60,6 +60,16 @@ def main(argv: list[str] | None = None) -> int:
     approve_parser.add_argument("capability", help="Capability name")
     approve_parser.add_argument("--by", default="user", help="Approver identity")
 
+    pause_parser = subparsers.add_parser("pause", help="Pause a mission schedule")
+    pause_parser.add_argument("mission_id", help="Mission ID")
+    pause_parser.add_argument("--reason", help="Optional pause reason")
+
+    resume_parser = subparsers.add_parser("resume", help="Resume a paused mission schedule")
+    resume_parser.add_argument("mission_id", help="Mission ID")
+
+    trigger_parser = subparsers.add_parser("trigger", help="Mark a mission schedule due now")
+    trigger_parser.add_argument("mission_id", help="Mission ID")
+
     subparsers.add_parser("tick", help="Run scheduled mission ticks that are due")
 
     args = parser.parse_args(argv)
@@ -69,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
         return _dispatch(args, store)
     except MissionNotFound as exc:
         print(f"Mission not found: {exc.mission_id}", file=sys.stderr)
+        return 1
+    except ScheduleNotConfigured as exc:
+        print(f"Mission has no schedule: {exc.mission_id}", file=sys.stderr)
         return 1
 
 
@@ -174,6 +187,17 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
             approved_by=args.by,
         )
         _print_json({"mission_id": mission.id, "approvals": mission.approvals})
+        return 0
+
+    if args.command in {"pause", "resume", "trigger"}:
+        orchestrator = MissionOrchestrator(store=store)
+        if args.command == "pause":
+            mission = orchestrator.pause_schedule(args.mission_id, reason=args.reason)
+        elif args.command == "resume":
+            mission = orchestrator.resume_schedule(args.mission_id)
+        else:
+            mission = orchestrator.trigger_schedule(args.mission_id)
+        _print_json({"mission_id": mission.id, "schedule": to_dict(mission.schedule)})
         return 0
 
     if args.command == "tick":

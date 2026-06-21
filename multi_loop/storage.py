@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from .models import Event, LedgerEntry, Mission, from_dict, to_dict, utc_now_iso
@@ -120,6 +121,8 @@ def _atomic_write_json(path: Path, data: dict) -> None:
     with tmp_path.open("w", encoding="utf-8") as handle:
         json.dump(data, handle, ensure_ascii=False, indent=2, sort_keys=True)
         handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())  # durably persist before the atomic replace
     tmp_path.replace(path)
 
 

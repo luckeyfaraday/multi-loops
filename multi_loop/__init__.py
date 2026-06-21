@@ -15,9 +15,10 @@ from .models import (
     Mission,
     MissionSchedule,
     PolicyGate,
+    ScheduleState,
     SideEffectClass,
 )
-from .orchestrator import GenerationRunResult, MissionOrchestrator
+from .orchestrator import GenerationRunResult, MissionOrchestrator, ScheduleNotConfigured
 from .planning import FitnessReviewer, HeuristicPortfolioPlanner, PortfolioPlan, prepare_candidate
 from .scheduler import MissionScheduler, SchedulerTickReport, TickResult
 from .onboarding import (
@@ -37,6 +38,7 @@ from .runners import (
     ShellRunner,
     default_runner_registry,
 )
+from .schedule_util import compute_next_run, parse_schedule
 from .storage import MissionStore
 from .verification import VerificationReport, VerificationResult, run_verification
 
@@ -61,6 +63,8 @@ __all__ = [
     "MissionOrchestrator",
     "MissionSchedule",
     "MissionStore",
+    "ScheduleNotConfigured",
+    "ScheduleState",
     "SchedulerTickReport",
     "TickResult",
     "prepare_candidate",
@@ -79,8 +83,10 @@ __all__ = [
     "VerificationReport",
     "VerificationResult",
     "collect_answers",
+    "compute_next_run",
     "default_capabilities",
     "default_runner_registry",
     "format_capability_brief",
+    "parse_schedule",
     "run_verification",
 ]

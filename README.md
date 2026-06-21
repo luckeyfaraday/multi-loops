@@ -477,6 +477,31 @@ python3 -m multi_loop status <mission-id>
 python3 -m multi_loop list
 ```
 
+### Scheduling
+
+Missions can carry a schedule that the `tick` command advances one bounded
+generation at a time. Supported expressions:
+
+- One-shot: `30m`, `2h`, `1d`, or an ISO timestamp like `2026-07-01T09:00:00`.
+- Recurring interval: `every 30m`, `every 2h`, `every 1d`.
+- Cron: `0 9 * * *` (requires the optional `croniter` package; other kinds stay
+  dependency-free).
+
+A schedule tracks operational state (`scheduled`, `paused`, `completed`,
+`error`) plus the last run's outcome (`last_status`, `last_error`). Recurring
+runs are pre-advanced before execution (at-most-once on crash), missed runs past
+their catch-up grace window are fast-forwarded instead of firing a stale burst,
+and a recurring schedule that can no longer compute its next run is surfaced as
+`error` rather than silently disabled.
+
+```bash
+python3 -m multi_loop create "Monitor competitors" --schedule "every 1d"
+python3 -m multi_loop pause <mission-id> --reason "holding for review"
+python3 -m multi_loop resume <mission-id>
+python3 -m multi_loop trigger <mission-id>   # mark due now
+python3 -m multi_loop tick                    # run all missions that are due
+```
+
 The intended flow is onboarding first:
 
 1. The user states the mission.
