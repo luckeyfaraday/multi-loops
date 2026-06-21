@@ -71,6 +71,9 @@ class Capability:
     latency_class: str = "unknown"
     verification: str = ""
     tags: list[str] = field(default_factory=list)
+    # Environment variables that must be set for this capability to be usable.
+    # The registry treats a capability with any missing variable as unavailable.
+    requires_env: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -78,6 +81,20 @@ class CapabilityRef:
     name: str
     required: bool = True
     reason: str = ""
+
+
+@dataclass(slots=True)
+class Toolset:
+    """A named, composable bundle of capabilities.
+
+    ``capabilities`` lists capability names; ``includes`` lists other toolset
+    names whose capabilities are folded in during resolution.
+    """
+
+    name: str
+    description: str = ""
+    capabilities: list[str] = field(default_factory=list)
+    includes: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -129,12 +146,33 @@ class Generation:
     synthesis: str | None = None
 
 
+class ScheduleState(str, Enum):
+    """Lifecycle state for an unattended mission schedule."""
+
+    SCHEDULED = "scheduled"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    ERROR = "error"
+
+
 @dataclass(slots=True)
 class MissionSchedule:
     expression: str
     next_run_at: str | None = None
     max_generation_steps: int | None = None
     enabled: bool = True
+    # Operational state borrowed from Hermes' unattended-job model so scheduled
+    # missions can be paused, report their last outcome, and surface errors
+    # instead of being silently disabled.
+    kind: str | None = None  # "once" | "interval" | "cron"
+    display: str = ""
+    state: ScheduleState = ScheduleState.SCHEDULED
+    paused_at: str | None = None
+    paused_reason: str | None = None
+    last_run_at: str | None = None
+    last_status: str | None = None  # "ok" | "error"
+    last_error: str | None = None
+    last_delivery_error: str | None = None
 
 
 @dataclass(slots=True)

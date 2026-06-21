@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterable
+from typing import Any
 
-from .models import Capability, SideEffectClass
+from .models import Capability, SideEffectClass, Toolset
 
 
 AvailabilityCheck = Callable[[], bool]
 
+# Tokens that resolve to every registered capability.
+_ALL_TOKENS = frozenset({"all", "*"})
+
 
 class CapabilityRegistry:
-    """Registry for capability cards and lightweight availability checks."""
+    """Registry for capability cards, availability checks, and toolsets."""
 
     def __init__(self) -> None:
         self._capabilities: dict[str, Capability] = {}
         self._checks: dict[str, AvailabilityCheck] = {}
+        self._toolsets: dict[str, Toolset] = {}
 
     def register(
         self,
@@ -46,7 +52,9 @@ class CapabilityRegistry:
         return [self._capabilities[name] for name in self.names()]
 
     def available(self, name: str) -> bool:
-        self.require(name)
+        capability = self.require(name)
+        if self.missing_env(name):
+            return False
         check = self._checks.get(name)
         if check is None:
             return True
@@ -55,8 +63,127 @@ class CapabilityRegistry:
         except Exception:
             return False
 
+    def missing_env(self, name: str) -> list[str]:
+        """Return the capability's declared env vars that are not currently set."""
+        capability = self.require(name)
+        return [var for var in capability.requires_env if not os.environ.get(var)]
+
     def filter_available(self) -> list[Capability]:
         return [capability for capability in self.list() if self.available(capability.name)]
+
+    def describe(self, name: str) -> dict[str, Any]:
+        """Return a structured capability card for the search/describe bridge."""
+        capability = self.require(name)
+        return {
+            "name": capability.name,
+            "description": capability.description,
+            "toolset_or_backend": capability.toolset_or_backend,
+            "side_effect_class": capability.side_effect_class.value,
+            "inputs": list(capability.inputs),
+            "outputs": list(capability.outputs),
+            "artifact_types": list(capability.artifact_types),
+            "cost_class": capability.cost_class,
+            "latency_class": capability.latency_class,
+            "verification": capability.verification,
+            "tags": list(capability.tags),
+            "available": self.available(name),
+            "requires_env": list(capability.requires_env),
+            "missing_env": self.missing_env(name),
+            "availability_check": capability.availability_check,
+        }
+
+    def search_cards(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        include_unavailable: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Search and return structured cards instead of raw capabilities."""
+        return [
+            self.describe(capability.name)
+            for capability in self.search(query, limit=limit, include_unavailable=include_unavailable)
+        ]
+
+    # -- Toolsets ---------------------------------------------------------
+
+    def register_toolset(self, toolset: Toolset, *, override: bool = False) -> None:
+        if toolset.name in self._toolsets and not override:
+            raise ValueError(f"Toolset already registered: {toolset.name}")
+        self._toolsets[toolset.name] = toolset
+
+    def get_toolset(self, name: str) -> Toolset | None:
+        return self._toolsets.get(name)
+
+    def toolset_names(self) -> list[str]:
+        return sorted(self._toolsets)
+
+    def resolve_names(self, names: str | Iterable[str]) -> list[str]:
+        """Resolve toolset names, capability names, and ``all``/``*`` to capabilities.
+
+        Returns capability names in first-seen order with duplicates removed.
+        Raises ``KeyError`` for a name that is neither a toolset nor a capability.
+        Cyclic toolset includes are resolved safely.
+        """
+        if isinstance(names, str):
+            names = [names]
+
+        ordered: list[str] = []
+        seen: set[str] = set()
+        expanding: set[str] = set()
+
+        def add_capability(capability_name: str) -> None:
+            if capability_name not in seen:
+                seen.add(capability_name)
+                ordered.append(capability_name)
+
+        def expand(name: str) -> None:
+            if name in _ALL_TOKENS:
+                for capability_name in self.names():
+                    add_capability(capability_name)
+            elif name in self._toolsets:
+                if name in expanding:
+                    return  # cyclic include; already being resolved
+                expanding.add(name)
+                toolset = self._toolsets[name]
+                for member in (*toolset.includes, *toolset.capabilities):
+                    expand(member)
+                expanding.discard(name)
+            elif name in self._capabilities:
+                add_capability(name)
+            else:
+                raise KeyError(f"Unknown capability or toolset: {name}")
+
+        for name in names:
+            expand(name)
+        return ordered
+
+    def resolve(
+        self,
+        names: str | Iterable[str],
+        *,
+        include_unavailable: bool = True,
+    ) -> list[Capability]:
+        """Resolve names to capabilities, optionally dropping unavailable ones."""
+        return [
+            self._capabilities[name]
+            for name in self.resolve_names(names)
+            if include_unavailable or self.available(name)
+        ]
+
+    def describe_toolset(self, name: str) -> dict[str, Any]:
+        toolset = self._toolsets.get(name)
+        if toolset is None:
+            raise KeyError(f"Unknown toolset: {name}")
+        resolved = self.resolve_names(name)
+        return {
+            "name": toolset.name,
+            "description": toolset.description,
+            "capabilities": list(toolset.capabilities),
+            "includes": list(toolset.includes),
+            "resolved": resolved,
+            "available": [name for name in resolved if self.available(name)],
+        }
 
     def search(
         self,
@@ -246,7 +373,45 @@ def default_capabilities() -> CapabilityRegistry:
         ),
         check=lambda: False,
     )
+    for toolset in default_toolsets():
+        registry.register_toolset(toolset)
     return registry
+
+
+def default_toolsets() -> list[Toolset]:
+    """Return the built-in capability bundles missions commonly request."""
+    return [
+        Toolset(
+            name="local_workers",
+            description="Local execution backends for running candidate loops.",
+            capabilities=["agent_loop", "agent_command", "shell_command", "manual_task"],
+        ),
+        Toolset(
+            name="research",
+            description="Gather outside-world evidence and source material.",
+            capabilities=["web_research", "browser_automation"],
+        ),
+        Toolset(
+            name="media",
+            description="Generate creative assets for campaigns and content.",
+            capabilities=["media_generation"],
+        ),
+        Toolset(
+            name="outreach",
+            description="Message people, publish updates, and run paid distribution.",
+            capabilities=["public_messaging", "paid_ads"],
+        ),
+        Toolset(
+            name="scheduling",
+            description="Resume long-running missions through bounded recurring steps.",
+            capabilities=["scheduled_tick"],
+        ),
+        Toolset(
+            name="company",
+            description="Capabilities a company-building mission typically draws on.",
+            includes=["research", "outreach", "media"],
+        ),
+    ]
 
 
 def _tokens(text: str) -> set[str]:

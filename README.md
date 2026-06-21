@@ -477,6 +477,31 @@ python3 -m multi_loop status <mission-id>
 python3 -m multi_loop list
 ```
 
+### Scheduling
+
+Missions can carry a schedule that the `tick` command advances one bounded
+generation at a time. Supported expressions:
+
+- One-shot: `30m`, `2h`, `1d`, or an ISO timestamp like `2026-07-01T09:00:00`.
+- Recurring interval: `every 30m`, `every 2h`, `every 1d`.
+- Cron: `0 9 * * *` (requires the optional `croniter` package; other kinds stay
+  dependency-free).
+
+A schedule tracks operational state (`scheduled`, `paused`, `completed`,
+`error`) plus the last run's outcome (`last_status`, `last_error`). Recurring
+runs are pre-advanced before execution (at-most-once on crash), missed runs past
+their catch-up grace window are fast-forwarded instead of firing a stale burst,
+and a recurring schedule that can no longer compute its next run is surfaced as
+`error` rather than silently disabled.
+
+```bash
+python3 -m multi_loop create "Monitor competitors" --schedule "every 1d"
+python3 -m multi_loop pause <mission-id> --reason "holding for review"
+python3 -m multi_loop resume <mission-id>
+python3 -m multi_loop trigger <mission-id>   # mark due now
+python3 -m multi_loop tick                    # run all missions that are due
+```
+
 The intended flow is onboarding first:
 
 1. The user states the mission.
@@ -502,6 +527,11 @@ Runtime state is stored under `.multi-loop/runs/<mission-id>/`:
 - `events.jsonl`: event stream for monitoring/debugging.
 - `artifacts/`: candidate outputs and generation synthesis.
 - `results/`: structured candidate run results.
+- `.run.lock`: exclusive run lease. A generation holds this lock for its whole
+  duration, so a scheduled tick, a detached MCP run, and a manual CLI run can
+  never produce a duplicate generation on the same mission; concurrent callers
+  raise `MissionBusy` (the scheduler reports this as an `already_running` skip).
+  The lock is process-held, so a crashed runner releases it automatically.
 
 ## MCP Server
 
@@ -529,6 +559,16 @@ The server exposes the mission runtime directly:
 - `run_status`, `run_tail`, `run_result`, and `run_list` monitor detached runs.
 - `tick` runs scheduled mission ticks that are currently due.
 - `list_backends` and `doctor` report local runner/capability and storage health.
+- `capability_search`, `capability_describe`, and `capability_list` are the
+  on-demand discovery bridge: search returns matching capability cards, describe
+  returns one full card (including `available`, `requires_env`, and `missing_env`),
+  and list enumerates all cards. The same surface is available from the CLI via
+  `multi-loop capabilities [--search Q | --describe NAME | --available]`.
+- `toolset_list` and `toolset_resolve` work with named capability bundles.
+  Toolsets compose via `includes` (e.g. `company` folds in `research`,
+  `outreach`, and `media`), and resolution accepts a mix of toolset names,
+  capability names, and `all`/`*`, returning a deduped capability list. The CLI
+  mirrors this with `multi-loop toolsets [--resolve "company,agent_loop"]`.
 
 Detached MCP run logs live under `.multi-loop/mcp-runs/<run-id>/` with
 `events.jsonl`, `status.json`, and `result.json`. Mission state remains under

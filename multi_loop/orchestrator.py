@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .capabilities import CapabilityRegistry, default_capabilities
@@ -16,12 +17,15 @@ from .models import (
     LedgerEntry,
     Mission,
     MissionSchedule,
+    ScheduleState,
     utc_now_iso,
 )
-from .planning import FitnessReviewer, HeuristicPortfolioPlanner, prepare_candidate
+from .leases import acquire_mission_lease
+from .planning import FitnessReviewer, HeuristicPortfolioPlanner
+from .policy import prepare_candidate
 from .runners import RunRequest, RunResult, RunnerRegistry, default_runner_registry, run_result_to_dict
-from .schedule_util import initialize_schedule
-from .storage import MissionStore
+from .schedule_util import compute_next_run, initialize_schedule
+from .storage import MissionNotFound, MissionStore
 from .verification import run_verification
 
 
@@ -110,7 +114,81 @@ class MissionOrchestrator:
         self.store.save_mission(mission)
         return mission
 
+    def pause_schedule(self, mission_id: str, *, reason: str | None = None) -> Mission:
+        """Pause a mission's schedule so it is skipped by ticks until resumed.
+
+        Pausing leaves ``enabled`` set and uses the ``PAUSED`` state so the
+        mission stays visible (and resumable) in tick reports; ``enabled=False``
+        is reserved for terminal schedules (completed or step-budget exhausted).
+        """
+        mission = self.store.load_mission(mission_id)
+        schedule = _require_schedule(mission)
+        schedule.state = ScheduleState.PAUSED
+        schedule.paused_at = utc_now_iso()
+        schedule.paused_reason = reason
+        self._record_schedule_event(mission, "schedule_paused", {"reason": reason})
+        self.store.save_mission(mission)
+        return mission
+
+    def resume_schedule(self, mission_id: str, *, now: datetime | None = None) -> Mission:
+        """Resume a paused schedule and recompute its next future run."""
+        mission = self.store.load_mission(mission_id)
+        schedule = _require_schedule(mission)
+        schedule.enabled = True
+        schedule.state = ScheduleState.SCHEDULED
+        schedule.paused_at = None
+        schedule.paused_reason = None
+        current = now or datetime.now(timezone.utc)
+        schedule.next_run_at = compute_next_run(
+            schedule.expression, now=current, last_run_at=schedule.last_run_at
+        ) or current.isoformat()
+        self._record_schedule_event(mission, "schedule_resumed", {"next_run_at": schedule.next_run_at})
+        self.store.save_mission(mission)
+        return mission
+
+    def trigger_schedule(self, mission_id: str) -> Mission:
+        """Mark a schedule due now so the next tick runs a generation."""
+        mission = self.store.load_mission(mission_id)
+        schedule = _require_schedule(mission)
+        schedule.enabled = True
+        if schedule.state in {ScheduleState.PAUSED, ScheduleState.ERROR}:
+            schedule.state = ScheduleState.SCHEDULED
+        schedule.next_run_at = utc_now_iso()
+        self._record_schedule_event(mission, "schedule_triggered", {"next_run_at": schedule.next_run_at})
+        self.store.save_mission(mission)
+        return mission
+
+    def _record_schedule_event(self, mission: Mission, event_type: str, data: dict[str, object]) -> None:
+        self._append_event(mission, event_type, data)
+        self._append_ledger(
+            mission,
+            LedgerEntry(mission_id=mission.id, event_type=event_type, summary=f"{event_type}: {mission.id}"),
+        )
+
     def run_generation(
+        self,
+        mission_id: str,
+        *,
+        runner_name: str | None = None,
+        verify_timeout_seconds: float | None = None,
+    ) -> GenerationRunResult:
+        """Run one generation under an exclusive mission lease.
+
+        Raises ``MissionBusy`` if another runner (CLI, MCP, scheduler) already
+        holds the mission, so concurrent callers skip rather than producing a
+        duplicate generation index.
+        """
+        mission_dir = self.store.mission_dir(mission_id)
+        if not mission_dir.exists():
+            raise MissionNotFound(mission_id)
+        with acquire_mission_lease(mission_dir, mission_id):
+            return self._run_generation_locked(
+                mission_id,
+                runner_name=runner_name,
+                verify_timeout_seconds=verify_timeout_seconds,
+            )
+
+    def _run_generation_locked(
         self,
         mission_id: str,
         *,
@@ -311,6 +389,20 @@ class MissionOrchestrator:
     def _append_ledger(self, mission: Mission, entry: LedgerEntry) -> None:
         self.store.append_ledger(entry)
         mission.ledger.append(entry.id)
+
+
+class ScheduleNotConfigured(ValueError):
+    """Raised when a schedule operation targets a mission without a schedule."""
+
+    def __init__(self, mission_id: str) -> None:
+        super().__init__(f"Mission has no schedule: {mission_id}")
+        self.mission_id = mission_id
+
+
+def _require_schedule(mission: Mission) -> MissionSchedule:
+    if mission.schedule is None:
+        raise ScheduleNotConfigured(mission.id)
+    return mission.schedule
 
 
 def _select_lineage(generation: Generation) -> list[str]:

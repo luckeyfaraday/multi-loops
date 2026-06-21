@@ -7,9 +7,10 @@ import json
 import sys
 from pathlib import Path
 
+from .capabilities import default_capabilities
 from .models import to_dict
 from .onboarding import OnboardingEngine, collect_answers, format_capability_brief
-from .orchestrator import MissionOrchestrator
+from .orchestrator import MissionOrchestrator, ScheduleNotConfigured
 from .scheduler import MissionScheduler
 from .storage import MissionNotFound, MissionStore
 
@@ -60,6 +61,34 @@ def main(argv: list[str] | None = None) -> int:
     approve_parser.add_argument("capability", help="Capability name")
     approve_parser.add_argument("--by", default="user", help="Approver identity")
 
+    pause_parser = subparsers.add_parser("pause", help="Pause a mission schedule")
+    pause_parser.add_argument("mission_id", help="Mission ID")
+    pause_parser.add_argument("--reason", help="Optional pause reason")
+
+    resume_parser = subparsers.add_parser("resume", help="Resume a paused mission schedule")
+    resume_parser.add_argument("mission_id", help="Mission ID")
+
+    trigger_parser = subparsers.add_parser("trigger", help="Mark a mission schedule due now")
+    trigger_parser.add_argument("mission_id", help="Mission ID")
+
+    capabilities_parser = subparsers.add_parser("capabilities", help="List or search capability cards")
+    capabilities_parser.add_argument("--search", help="Search capabilities by query")
+    capabilities_parser.add_argument("--describe", help="Describe a single capability by name")
+    capabilities_parser.add_argument(
+        "--available", action="store_true", help="Only show currently available capabilities"
+    )
+    capabilities_parser.add_argument(
+        "--include-unavailable",
+        action="store_true",
+        help="Include unavailable capabilities in search results",
+    )
+
+    toolsets_parser = subparsers.add_parser("toolsets", help="List or resolve capability toolsets")
+    toolsets_parser.add_argument(
+        "--resolve",
+        help="Resolve toolset/capability names (comma- or space-separated, or all) to capabilities",
+    )
+
     subparsers.add_parser("tick", help="Run scheduled mission ticks that are due")
 
     args = parser.parse_args(argv)
@@ -69,6 +98,9 @@ def main(argv: list[str] | None = None) -> int:
         return _dispatch(args, store)
     except MissionNotFound as exc:
         print(f"Mission not found: {exc.mission_id}", file=sys.stderr)
+        return 1
+    except ScheduleNotConfigured as exc:
+        print(f"Mission has no schedule: {exc.mission_id}", file=sys.stderr)
         return 1
 
 
@@ -174,6 +206,62 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
             approved_by=args.by,
         )
         _print_json({"mission_id": mission.id, "approvals": mission.approvals})
+        return 0
+
+    if args.command in {"pause", "resume", "trigger"}:
+        orchestrator = MissionOrchestrator(store=store)
+        if args.command == "pause":
+            mission = orchestrator.pause_schedule(args.mission_id, reason=args.reason)
+        elif args.command == "resume":
+            mission = orchestrator.resume_schedule(args.mission_id)
+        else:
+            mission = orchestrator.trigger_schedule(args.mission_id)
+        _print_json({"mission_id": mission.id, "schedule": to_dict(mission.schedule)})
+        return 0
+
+    if args.command == "capabilities":
+        registry = default_capabilities()
+        if args.describe:
+            if registry.get(args.describe) is None:
+                print(f"Unknown capability: {args.describe}", file=sys.stderr)
+                return 1
+            _print_json(registry.describe(args.describe))
+        elif args.search:
+            _print_json(
+                {
+                    "query": args.search,
+                    "results": registry.search_cards(
+                        args.search, include_unavailable=args.include_unavailable
+                    ),
+                }
+            )
+        else:
+            cards = [registry.describe(name) for name in registry.names()]
+            if args.available:
+                cards = [card for card in cards if card["available"]]
+            _print_json({"capabilities": cards, "count": len(cards)})
+        return 0
+
+    if args.command == "toolsets":
+        registry = default_capabilities()
+        if args.resolve:
+            names = args.resolve.replace(",", " ").split()
+            try:
+                resolved = registry.resolve_names(names)
+            except KeyError as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            _print_json(
+                {
+                    "names": names,
+                    "resolved": resolved,
+                    "available": [name for name in resolved if registry.available(name)],
+                }
+            )
+        else:
+            _print_json(
+                {"toolsets": [registry.describe_toolset(name) for name in registry.toolset_names()]}
+            )
         return 0
 
     if args.command == "tick":

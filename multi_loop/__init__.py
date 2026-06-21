@@ -1,6 +1,6 @@
 """Core primitives for multi-loop mission orchestration."""
 
-from .capabilities import CapabilityRegistry, default_capabilities
+from .capabilities import CapabilityRegistry, default_capabilities, default_toolsets
 from .models import (
     Artifact,
     Budget,
@@ -15,10 +15,14 @@ from .models import (
     Mission,
     MissionSchedule,
     PolicyGate,
+    ScheduleState,
     SideEffectClass,
+    Toolset,
 )
-from .orchestrator import GenerationRunResult, MissionOrchestrator
-from .planning import FitnessReviewer, HeuristicPortfolioPlanner, PortfolioPlan, prepare_candidate
+from .leases import MissionBusy, MissionLease, acquire_mission_lease
+from .orchestrator import GenerationRunResult, MissionOrchestrator, ScheduleNotConfigured
+from .planning import FitnessReviewer, HeuristicPortfolioPlanner, PortfolioPlan
+from .policy import PathEscape, prepare_candidate, resolve_within
 from .scheduler import MissionScheduler, SchedulerTickReport, TickResult
 from .onboarding import (
     CapabilityRecommendation,
@@ -37,6 +41,7 @@ from .runners import (
     ShellRunner,
     default_runner_registry,
 )
+from .schedule_util import compute_next_run, parse_schedule
 from .storage import MissionStore
 from .verification import VerificationReport, VerificationResult, run_verification
 
@@ -58,11 +63,17 @@ __all__ = [
     "PortfolioPlan",
     "LedgerEntry",
     "Mission",
+    "MissionBusy",
+    "MissionLease",
     "MissionOrchestrator",
     "MissionSchedule",
     "MissionStore",
+    "PathEscape",
+    "ScheduleNotConfigured",
+    "ScheduleState",
     "SchedulerTickReport",
     "TickResult",
+    "Toolset",
     "prepare_candidate",
     "CapabilityRecommendation",
     "OnboardingEngine",
@@ -78,9 +89,14 @@ __all__ = [
     "SideEffectClass",
     "VerificationReport",
     "VerificationResult",
+    "acquire_mission_lease",
     "collect_answers",
+    "compute_next_run",
     "default_capabilities",
     "default_runner_registry",
+    "default_toolsets",
     "format_capability_brief",
+    "parse_schedule",
+    "resolve_within",
     "run_verification",
 ]

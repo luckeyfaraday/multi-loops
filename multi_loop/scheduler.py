@@ -1,4 +1,17 @@
-"""Bounded scheduled mission ticks."""
+"""Bounded scheduled mission ticks.
+
+The scheduler runs one bounded generation for each mission that is due. It
+borrows Hermes' unattended-job discipline:
+
+- at-most-once: ``next_run_at`` is pre-advanced before a recurring run so a
+  crash mid-generation does not re-fire the same run on the next tick.
+- missed recurring runs that are past their catch-up grace window are
+  fast-forwarded instead of firing a stale burst.
+- run outcome (``last_status``/``last_error``) is recorded on the schedule, and
+  a recurring schedule that can no longer compute its next run is surfaced as
+  ``error`` rather than silently disabled.
+- paused schedules are skipped without being reconsidered as due.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +19,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from .schedule_util import advance_schedule, is_schedule_due
+from .leases import MissionBusy
+from .models import ScheduleState
+from .schedule_util import (
+    advance_schedule,
+    is_schedule_due,
+    is_stale_recurring,
+    mark_schedule_run,
+)
 from .storage import MissionStore
 
 if TYPE_CHECKING:
@@ -20,6 +40,8 @@ class TickResult:
     next_run_at: str | None
     run_result: GenerationRunResult | None = None
     skipped_reason: str | None = None
+    last_status: str | None = None
+    error: str | None = None
 
 
 @dataclass(slots=True)
@@ -53,45 +75,93 @@ class MissionScheduler:
             if schedule is None or not schedule.enabled:
                 continue
 
+            if schedule.state == ScheduleState.PAUSED:
+                report.skipped.append(self._skip(mission, schedule, "paused"))
+                continue
+
             if not is_schedule_due(schedule, current):
-                report.skipped.append(
-                    TickResult(
-                        mission_id=mission.id,
-                        generation_index=len(mission.generations),
-                        next_run_at=schedule.next_run_at,
-                        skipped_reason="not_due",
-                    )
-                )
+                report.skipped.append(self._skip(mission, schedule, "not_due"))
+                continue
+
+            if is_stale_recurring(schedule, current):
+                # Gateway was down past the catch-up window: fast-forward to the
+                # next future run instead of firing a stale generation.
+                advance_schedule(schedule, current)
+                self.store.save_mission(mission)
+                report.skipped.append(self._skip(mission, schedule, "fast_forwarded"))
                 continue
 
             if schedule.max_generation_steps is not None and schedule.max_generation_steps <= 0:
-                report.skipped.append(
-                    TickResult(
-                        mission_id=mission.id,
-                        generation_index=len(mission.generations),
-                        next_run_at=schedule.next_run_at,
-                        skipped_reason="max_generation_steps_reached",
-                    )
-                )
+                report.skipped.append(self._skip(mission, schedule, "max_generation_steps_reached"))
                 continue
 
-            result = self.orchestrator.run_generation(mission.id)
-            refreshed = self.store.load_mission(mission.id)
-            refreshed.schedule = advance_schedule(refreshed.schedule, current)
-            if refreshed.schedule is not None and refreshed.schedule.max_generation_steps is not None:
-                refreshed.schedule.max_generation_steps -= 1
-                if refreshed.schedule.max_generation_steps <= 0:
-                    # Exhausted: disable so the mission stops being reconsidered each tick.
-                    refreshed.schedule.enabled = False
-            self.store.save_mission(refreshed)
-
-            report.ticked.append(
-                TickResult(
-                    mission_id=mission.id,
-                    generation_index=result.generation_index,
-                    next_run_at=refreshed.schedule.next_run_at if refreshed.schedule else None,
-                    run_result=result,
-                )
-            )
+            result = self._run_due(mission.id, schedule_kind=schedule.kind, now=current)
+            if result.skipped_reason:
+                report.skipped.append(result)
+            else:
+                report.ticked.append(result)
 
         return report
+
+    def _run_due(self, mission_id: str, *, schedule_kind: str | None, now: datetime) -> TickResult:
+        # Pre-advance recurring schedules before running (at-most-once crash
+        # safety). One-shot schedules are left untouched so they can retry.
+        if schedule_kind in {"interval", "cron"}:
+            mission = self.store.load_mission(mission_id)
+            advance_schedule(mission.schedule, now)
+            self.store.save_mission(mission)
+
+        run_result: GenerationRunResult | None = None
+        success = True
+        error: str | None = None
+        try:
+            run_result = self.orchestrator.run_generation(mission_id)
+        except MissionBusy:
+            # Another runner (CLI/MCP/overlapping tick) holds the mission. Skip
+            # this cycle; that runner advances the mission, and the schedule was
+            # already pre-advanced so the next tick lands in the future.
+            mission = self.store.load_mission(mission_id)
+            return self._skip(mission, mission.schedule, "already_running")
+        except Exception as exc:  # isolate one mission's failure from the tick loop
+            success = False
+            error = f"{type(exc).__name__}: {exc}"
+
+        refreshed = self.store.load_mission(mission_id)
+        schedule = refreshed.schedule
+        if schedule is not None:
+            mark_schedule_run(schedule, success=success, now=now, error=error)
+            self._consume_step_budget(schedule)
+            self.store.save_mission(refreshed)
+
+        return TickResult(
+            mission_id=mission_id,
+            generation_index=run_result.generation_index if run_result else len(refreshed.generations),
+            next_run_at=schedule.next_run_at if schedule else None,
+            run_result=run_result,
+            last_status=schedule.last_status if schedule else None,
+            error=error,
+        )
+
+    @staticmethod
+    def _consume_step_budget(schedule) -> None:
+        """Decrement the generation-step budget and disable once exhausted.
+
+        Budget is consumed on both success and failure so a repeatedly failing
+        mission cannot loop forever against a finite step budget.
+        """
+        if schedule.max_generation_steps is None:
+            return
+        schedule.max_generation_steps -= 1
+        if schedule.max_generation_steps <= 0:
+            schedule.enabled = False
+            schedule.state = ScheduleState.COMPLETED
+
+    @staticmethod
+    def _skip(mission, schedule, reason: str) -> TickResult:
+        return TickResult(
+            mission_id=mission.id,
+            generation_index=len(mission.generations),
+            next_run_at=schedule.next_run_at,
+            skipped_reason=reason,
+            last_status=schedule.last_status,
+        )
