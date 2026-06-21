@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterable
+from typing import Any
 
 from .models import Capability, SideEffectClass
 
@@ -46,7 +48,9 @@ class CapabilityRegistry:
         return [self._capabilities[name] for name in self.names()]
 
     def available(self, name: str) -> bool:
-        self.require(name)
+        capability = self.require(name)
+        if self.missing_env(name):
+            return False
         check = self._checks.get(name)
         if check is None:
             return True
@@ -55,8 +59,47 @@ class CapabilityRegistry:
         except Exception:
             return False
 
+    def missing_env(self, name: str) -> list[str]:
+        """Return the capability's declared env vars that are not currently set."""
+        capability = self.require(name)
+        return [var for var in capability.requires_env if not os.environ.get(var)]
+
     def filter_available(self) -> list[Capability]:
         return [capability for capability in self.list() if self.available(capability.name)]
+
+    def describe(self, name: str) -> dict[str, Any]:
+        """Return a structured capability card for the search/describe bridge."""
+        capability = self.require(name)
+        return {
+            "name": capability.name,
+            "description": capability.description,
+            "toolset_or_backend": capability.toolset_or_backend,
+            "side_effect_class": capability.side_effect_class.value,
+            "inputs": list(capability.inputs),
+            "outputs": list(capability.outputs),
+            "artifact_types": list(capability.artifact_types),
+            "cost_class": capability.cost_class,
+            "latency_class": capability.latency_class,
+            "verification": capability.verification,
+            "tags": list(capability.tags),
+            "available": self.available(name),
+            "requires_env": list(capability.requires_env),
+            "missing_env": self.missing_env(name),
+            "availability_check": capability.availability_check,
+        }
+
+    def search_cards(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        include_unavailable: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Search and return structured cards instead of raw capabilities."""
+        return [
+            self.describe(capability.name)
+            for capability in self.search(query, limit=limit, include_unavailable=include_unavailable)
+        ]
 
     def search(
         self,

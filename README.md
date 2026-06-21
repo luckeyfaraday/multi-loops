@@ -559,6 +559,11 @@ The server exposes the mission runtime directly:
 - `run_status`, `run_tail`, `run_result`, and `run_list` monitor detached runs.
 - `tick` runs scheduled mission ticks that are currently due.
 - `list_backends` and `doctor` report local runner/capability and storage health.
+- `capability_search`, `capability_describe`, and `capability_list` are the
+  on-demand discovery bridge: search returns matching capability cards, describe
+  returns one full card (including `available`, `requires_env`, and `missing_env`),
+  and list enumerates all cards. The same surface is available from the CLI via
+  `multi-loop capabilities [--search Q | --describe NAME | --available]`.
 
 Detached MCP run logs live under `.multi-loop/mcp-runs/<run-id>/` with
 `events.jsonl`, `status.json`, and `result.json`. Mission state remains under

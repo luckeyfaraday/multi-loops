@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+from .capabilities import default_capabilities
 from .models import to_dict
 from .onboarding import OnboardingEngine, collect_answers, format_capability_brief
 from .orchestrator import MissionOrchestrator, ScheduleNotConfigured
@@ -69,6 +70,18 @@ def main(argv: list[str] | None = None) -> int:
 
     trigger_parser = subparsers.add_parser("trigger", help="Mark a mission schedule due now")
     trigger_parser.add_argument("mission_id", help="Mission ID")
+
+    capabilities_parser = subparsers.add_parser("capabilities", help="List or search capability cards")
+    capabilities_parser.add_argument("--search", help="Search capabilities by query")
+    capabilities_parser.add_argument("--describe", help="Describe a single capability by name")
+    capabilities_parser.add_argument(
+        "--available", action="store_true", help="Only show currently available capabilities"
+    )
+    capabilities_parser.add_argument(
+        "--include-unavailable",
+        action="store_true",
+        help="Include unavailable capabilities in search results",
+    )
 
     subparsers.add_parser("tick", help="Run scheduled mission ticks that are due")
 
@@ -198,6 +211,29 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
         else:
             mission = orchestrator.trigger_schedule(args.mission_id)
         _print_json({"mission_id": mission.id, "schedule": to_dict(mission.schedule)})
+        return 0
+
+    if args.command == "capabilities":
+        registry = default_capabilities()
+        if args.describe:
+            if registry.get(args.describe) is None:
+                print(f"Unknown capability: {args.describe}", file=sys.stderr)
+                return 1
+            _print_json(registry.describe(args.describe))
+        elif args.search:
+            _print_json(
+                {
+                    "query": args.search,
+                    "results": registry.search_cards(
+                        args.search, include_unavailable=args.include_unavailable
+                    ),
+                }
+            )
+        else:
+            cards = [registry.describe(name) for name in registry.names()]
+            if args.available:
+                cards = [card for card in cards if card["available"]]
+            _print_json({"capabilities": cards, "count": len(cards)})
         return 0
 
     if args.command == "tick":

@@ -294,6 +294,34 @@ def list_backends_impl() -> dict[str, Any]:
     }
 
 
+def capability_list_impl(*, available_only: bool = False) -> dict[str, Any]:
+    registry = default_capabilities()
+    cards = [registry.describe(name) for name in registry.names()]
+    if available_only:
+        cards = [card for card in cards if card["available"]]
+    return {"capabilities": cards, "count": len(cards)}
+
+
+def capability_search_impl(
+    query: str,
+    *,
+    limit: int = 5,
+    include_unavailable: bool = False,
+) -> dict[str, Any]:
+    registry = default_capabilities()
+    return {
+        "query": query,
+        "results": registry.search_cards(query, limit=limit, include_unavailable=include_unavailable),
+    }
+
+
+def capability_describe_impl(name: str) -> dict[str, Any]:
+    registry = default_capabilities()
+    if registry.get(name) is None:
+        return {"error": f"Unknown capability: {name}", "name": name}
+    return registry.describe(name)
+
+
 def doctor_impl(root: str = DEFAULT_ROOT, cwd: str | None = None) -> dict[str, Any]:
     root_path = Path(root)
     cwd_status: dict[str, Any] = {"path": cwd, "provided": cwd is not None}
@@ -435,6 +463,25 @@ def build_server():
     def list_backends() -> dict[str, Any]:
         """List configured local runners and capability availability."""
         return list_backends_impl()
+
+    @mcp.tool()
+    def capability_list(available_only: bool = False) -> dict[str, Any]:
+        """List capability cards, optionally only those currently available."""
+        return capability_list_impl(available_only=available_only)
+
+    @mcp.tool()
+    def capability_search(
+        query: str,
+        limit: int = 5,
+        include_unavailable: bool = False,
+    ) -> dict[str, Any]:
+        """Search capability cards by token overlap for on-demand discovery."""
+        return capability_search_impl(query, limit=limit, include_unavailable=include_unavailable)
+
+    @mcp.tool()
+    def capability_describe(name: str) -> dict[str, Any]:
+        """Return the full capability card, including availability and missing env."""
+        return capability_describe_impl(name)
 
     @mcp.tool()
     def doctor(root: str = DEFAULT_ROOT, cwd: str | None = None) -> dict[str, Any]:

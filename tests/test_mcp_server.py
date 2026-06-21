@@ -7,6 +7,9 @@ from pathlib import Path
 
 from multi_loop.mcp_server import (
     build_server,
+    capability_describe_impl,
+    capability_list_impl,
+    capability_search_impl,
     create_mission_impl,
     doctor_impl,
     list_backends_impl,
@@ -95,6 +98,21 @@ class McpServerTests(unittest.TestCase):
         self.assertIn("error", run_status_impl("missing"))
         self.assertIn("error", run_tail_impl("missing"))
         self.assertIn("error", run_result_impl("missing"))
+
+    def test_capability_discovery_impls(self):
+        listing = capability_list_impl()
+        available = capability_list_impl(available_only=True)
+        search = capability_search_impl("shell command local")
+        described = capability_describe_impl("shell_command")
+        unknown = capability_describe_impl("does_not_exist")
+
+        self.assertEqual(listing["count"], len(listing["capabilities"]))
+        self.assertLessEqual(available["count"], listing["count"])
+        self.assertTrue(all(card["available"] for card in available["capabilities"]))
+        self.assertIn("shell_command", [card["name"] for card in search["results"]])
+        self.assertTrue(described["available"])
+        self.assertIn("error", unknown)
+        json.dumps({"listing": listing, "search": search, "described": described})
 
     def test_build_server_constructs_when_mcp_sdk_is_installed(self):
         if importlib.util.find_spec("mcp") is None:

@@ -71,6 +71,9 @@ class Capability:
     latency_class: str = "unknown"
     verification: str = ""
     tags: list[str] = field(default_factory=list)
+    # Environment variables that must be set for this capability to be usable.
+    # The registry treats a capability with any missing variable as unavailable.
+    requires_env: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
