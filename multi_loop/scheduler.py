@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from .leases import MissionBusy
 from .models import ScheduleState
 from .schedule_util import (
     advance_schedule,
@@ -94,7 +95,11 @@ class MissionScheduler:
                 report.skipped.append(self._skip(mission, schedule, "max_generation_steps_reached"))
                 continue
 
-            report.ticked.append(self._run_due(mission.id, schedule_kind=schedule.kind, now=current))
+            result = self._run_due(mission.id, schedule_kind=schedule.kind, now=current)
+            if result.skipped_reason:
+                report.skipped.append(result)
+            else:
+                report.ticked.append(result)
 
         return report
 
@@ -111,6 +116,12 @@ class MissionScheduler:
         error: str | None = None
         try:
             run_result = self.orchestrator.run_generation(mission_id)
+        except MissionBusy:
+            # Another runner (CLI/MCP/overlapping tick) holds the mission. Skip
+            # this cycle; that runner advances the mission, and the schedule was
+            # already pre-advanced so the next tick lands in the future.
+            mission = self.store.load_mission(mission_id)
+            return self._skip(mission, mission.schedule, "already_running")
         except Exception as exc:  # isolate one mission's failure from the tick loop
             success = False
             error = f"{type(exc).__name__}: {exc}"

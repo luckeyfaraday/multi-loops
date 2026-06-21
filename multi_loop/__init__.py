@@ -18,6 +18,7 @@ from .models import (
     ScheduleState,
     SideEffectClass,
 )
+from .leases import MissionBusy, MissionLease, acquire_mission_lease
 from .orchestrator import GenerationRunResult, MissionOrchestrator, ScheduleNotConfigured
 from .planning import FitnessReviewer, HeuristicPortfolioPlanner, PortfolioPlan, prepare_candidate
 from .scheduler import MissionScheduler, SchedulerTickReport, TickResult
@@ -60,6 +61,8 @@ __all__ = [
     "PortfolioPlan",
     "LedgerEntry",
     "Mission",
+    "MissionBusy",
+    "MissionLease",
     "MissionOrchestrator",
     "MissionSchedule",
     "MissionStore",
@@ -82,6 +85,7 @@ __all__ = [
     "SideEffectClass",
     "VerificationReport",
     "VerificationResult",
+    "acquire_mission_lease",
     "collect_answers",
     "compute_next_run",
     "default_capabilities",

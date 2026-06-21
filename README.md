@@ -527,6 +527,11 @@ Runtime state is stored under `.multi-loop/runs/<mission-id>/`:
 - `events.jsonl`: event stream for monitoring/debugging.
 - `artifacts/`: candidate outputs and generation synthesis.
 - `results/`: structured candidate run results.
+- `.run.lock`: exclusive run lease. A generation holds this lock for its whole
+  duration, so a scheduled tick, a detached MCP run, and a manual CLI run can
+  never produce a duplicate generation on the same mission; concurrent callers
+  raise `MissionBusy` (the scheduler reports this as an `already_running` skip).
+  The lock is process-held, so a crashed runner releases it automatically.
 
 ## MCP Server
 

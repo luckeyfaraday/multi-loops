@@ -20,10 +20,11 @@ from .models import (
     ScheduleState,
     utc_now_iso,
 )
+from .leases import acquire_mission_lease
 from .planning import FitnessReviewer, HeuristicPortfolioPlanner, prepare_candidate
 from .runners import RunRequest, RunResult, RunnerRegistry, default_runner_registry, run_result_to_dict
 from .schedule_util import compute_next_run, initialize_schedule
-from .storage import MissionStore
+from .storage import MissionNotFound, MissionStore
 from .verification import run_verification
 
 
@@ -164,6 +165,29 @@ class MissionOrchestrator:
         )
 
     def run_generation(
+        self,
+        mission_id: str,
+        *,
+        runner_name: str | None = None,
+        verify_timeout_seconds: float | None = None,
+    ) -> GenerationRunResult:
+        """Run one generation under an exclusive mission lease.
+
+        Raises ``MissionBusy`` if another runner (CLI, MCP, scheduler) already
+        holds the mission, so concurrent callers skip rather than producing a
+        duplicate generation index.
+        """
+        mission_dir = self.store.mission_dir(mission_id)
+        if not mission_dir.exists():
+            raise MissionNotFound(mission_id)
+        with acquire_mission_lease(mission_dir, mission_id):
+            return self._run_generation_locked(
+                mission_id,
+                runner_name=runner_name,
+                verify_timeout_seconds=verify_timeout_seconds,
+            )
+
+    def _run_generation_locked(
         self,
         mission_id: str,
         *,
