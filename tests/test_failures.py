@@ -58,6 +58,7 @@ class RuleBasedClassifierTests(unittest.TestCase):
             _failure(summary="Required capability unavailable: web_research (needs setup)", blocked_by_policy=True)
         )
         self.assertEqual(unavailable.failure_class, FailureClass.TOOL_UNAVAILABLE)
+        self.assertEqual(unavailable.signals.get("capability"), "web_research")
 
     def test_timeout_is_resource_exhausted(self):
         outcome = self._classify(_failure(timed_out=True))

@@ -27,6 +27,7 @@ def _failed_candidate(cid: str, role: str, *, capability: str | None, remedy: st
         success=False,
         failure_class=failure_class,
         remedy_hint=remedy,
+        signals={"capability": capability} if capability and failure_class is FailureClass.TOOL_UNAVAILABLE else {},
         created_at=created_at,
     )
     return candidate
@@ -85,6 +86,48 @@ class RelevantLessonsTests(unittest.TestCase):
                 roles=[], capabilities=["agent_loop"], exclude_mission_id="mission_keep"
             )
             self.assertEqual(excluded, [])
+
+    def test_matches_any_required_capability_and_tracks_the_failed_one(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            failed = _failed_candidate(
+                "c1", "content_research", capability="media_generation",
+                remedy="configure media generation",
+                failure_class=FailureClass.TOOL_UNAVAILABLE,
+                created_at="2026-01-01T00:00:00+00:00",
+            )
+            failed.required_capabilities = [
+                CapabilityRef(name="web_research"),
+                CapabilityRef(name="media_generation"),
+            ]
+            store = _store_with_outcomes(tmpdir, [failed])
+            index = MissionIndex(store.root)
+            index.rebuild(store)
+
+            lessons = index.relevant_lessons(
+                roles=[], capabilities=["media_generation"]
+            )
+            capabilities = default_capabilities()
+            capabilities.register(
+                capabilities.require("web_research"), check=lambda: True, override=True
+            )
+            orchestrator = MissionOrchestrator(
+                store=store, capabilities=capabilities, lessons_index=index
+            )
+            target_mission = Mission(statement="b", success_criteria="s", id="mission_b")
+            target = CandidateLoop(
+                goal="g",
+                success_criteria="s",
+                role="content_research",
+                required_capabilities=[
+                    CapabilityRef(name="web_research"),
+                    CapabilityRef(name="media_generation"),
+                ],
+            )
+            hints = orchestrator._cross_mission_pitfalls(target_mission, target)
+
+        self.assertEqual(len(lessons), 1)
+        self.assertEqual(lessons[0].capability, "media_generation")
+        self.assertEqual(hints, ["configure media generation"])
 
 
 class _RecordingFailRunner:
@@ -187,6 +230,35 @@ class StaleToolLessonTests(unittest.TestCase):
             mission, candidate = self._target()
             hints = orchestrator._cross_mission_pitfalls(mission, candidate)
             self.assertNotIn("tool unavailable; configure it", hints)
+
+    def test_stale_and_duplicate_lessons_do_not_hide_an_older_valid_lesson(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            candidates = [
+                _failed_candidate(
+                    "valid", "research", capability="agent_loop", remedy="use smaller steps",
+                    failure_class=FailureClass.RESOURCE_EXHAUSTED,
+                    created_at="2026-01-01T00:00:00+00:00",
+                ),
+                *[
+                    _failed_candidate(
+                        f"stale-{index}", "research", capability="agent_loop",
+                        remedy="configure agent loop",
+                        failure_class=FailureClass.TOOL_UNAVAILABLE,
+                        created_at=f"2026-0{index + 2}-01T00:00:00+00:00",
+                    )
+                    for index in range(3)
+                ],
+            ]
+            store = _store_with_outcomes(tmpdir, candidates)
+            index = MissionIndex(store.root)
+            index.rebuild(store)
+            orchestrator = MissionOrchestrator(store=store, lessons_index=index)
+            mission = Mission(statement="b", success_criteria="s", id="mission_b")
+            candidate = CandidateLoop(goal="g", success_criteria="s", role="research")
+
+            hints = orchestrator._cross_mission_pitfalls(mission, candidate)
+
+        self.assertEqual(hints, ["use smaller steps"])
 
 
 if __name__ == "__main__":

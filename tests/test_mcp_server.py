@@ -135,10 +135,12 @@ class McpServerTests(unittest.TestCase):
             )
 
             run = run_generation_impl(created["mission_id"], root=root, detach=False)
+            index_created = (Path(root) / "index.db").exists()
             status = mission_status_impl(created["mission_id"], root=root)
             listing = list_missions_impl(root=root)
 
         self.assertEqual(run["generation_index"], 0)
+        self.assertTrue(index_created)
         self.assertEqual(status["mission"]["id"], created["mission_id"])
         self.assertEqual(status["ledger_count"], 5)
         self.assertEqual(len(listing["missions"]), 1)

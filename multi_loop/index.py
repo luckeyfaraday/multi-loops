@@ -71,9 +71,15 @@ CREATE TABLE outcomes (
     fitness REAL,
     created_at TEXT
 );
+CREATE TABLE outcome_capabilities (
+    candidate_id TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    PRIMARY KEY (candidate_id, capability)
+);
 CREATE INDEX idx_candidates_mission ON candidates(mission_id);
 CREATE INDEX idx_ledger_mission ON ledger(mission_id);
 CREATE INDEX idx_outcomes_lookup ON outcomes(role, capability, failure_class);
+CREATE INDEX idx_outcome_capabilities_lookup ON outcome_capabilities(capability, candidate_id);
 """
 
 
@@ -122,7 +128,14 @@ class MissionIndex:
         if version == SCHEMA_VERSION and _has_tables(conn):
             return
         # Derived index: drop and recreate rather than migrate.
-        for table in ("missions", "candidates", "candidate_parents", "ledger", "outcomes"):
+        for table in (
+            "missions",
+            "candidates",
+            "candidate_parents",
+            "ledger",
+            "outcome_capabilities",
+            "outcomes",
+        ):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.executescript(_SCHEMA)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -136,6 +149,7 @@ class MissionIndex:
             conn.execute("DELETE FROM candidates")
             conn.execute("DELETE FROM candidate_parents")
             conn.execute("DELETE FROM ledger")
+            conn.execute("DELETE FROM outcome_capabilities")
             conn.execute("DELETE FROM outcomes")
             for mission in missions:
                 self._index_mission(conn, mission)
@@ -194,7 +208,7 @@ class MissionIndex:
                             candidate.id,
                             mission.id,
                             candidate.role,
-                            _primary_capability(candidate),
+                            _lesson_capability(candidate, outcome),
                             1 if outcome.success else 0,
                             outcome.failure_class.value if outcome.failure_class else None,
                             outcome.failure_subreason,
@@ -203,6 +217,11 @@ class MissionIndex:
                             outcome.created_at,
                         ),
                     )
+                    for capability in _capability_names(candidate):
+                        conn.execute(
+                            "INSERT OR REPLACE INTO outcome_capabilities VALUES (?,?)",
+                            (candidate.id, capability),
+                        )
 
     def search_ledger(self, query: str, *, limit: int = 20) -> list[LedgerHit]:
         like = f"%{query.strip()}%"
@@ -245,7 +264,7 @@ class MissionIndex:
         roles: list[str] | None = None,
         capabilities: list[str] | None = None,
         exclude_mission_id: str | None = None,
-        limit: int = 5,
+        limit: int | None = 5,
     ) -> list[Lesson]:
         """Return failed-loop lessons matching a role or capability, newest first.
 
@@ -265,7 +284,11 @@ class MissionIndex:
             match_clauses.append(f"role IN ({','.join('?' * len(roles))})")
             params.extend(roles)
         if capabilities:
-            match_clauses.append(f"capability IN ({','.join('?' * len(capabilities))})")
+            match_clauses.append(
+                "EXISTS (SELECT 1 FROM outcome_capabilities oc "
+                "WHERE oc.candidate_id = outcomes.candidate_id "
+                f"AND oc.capability IN ({','.join('?' * len(capabilities))}))"
+            )
             params.extend(capabilities)
 
         where = (
@@ -275,16 +298,17 @@ class MissionIndex:
         if exclude_mission_id:
             where += " AND mission_id != ?"
             params.append(exclude_mission_id)
-        params.append(limit)
-
         with self._connect() as conn:
             self._ensure_schema(conn)
-            rows = conn.execute(
+            query = (
                 "SELECT candidate_id, mission_id, role, capability, failure_class, "
                 "failure_subreason, remedy_hint, fitness, created_at FROM outcomes "
-                f"WHERE {where} ORDER BY created_at DESC LIMIT ?",
-                params,
-            ).fetchall()
+                f"WHERE {where} ORDER BY created_at DESC"
+            )
+            if limit is not None:
+                query += " LIMIT ?"
+                params.append(limit)
+            rows = conn.execute(query, params).fetchall()
         return [
             Lesson(
                 candidate_id=row["candidate_id"],
@@ -319,14 +343,28 @@ class MissionIndex:
         return [row["id"] for row in rows]
 
 
-def _primary_capability(candidate: Any) -> str:
-    """The capability a lesson is keyed by; mirrors planning's default of agent_loop."""
-    refs = candidate.required_capabilities
-    return refs[0].name if refs else "agent_loop"
+def _capability_names(candidate: Any) -> list[str]:
+    names = [ref.name for ref in candidate.required_capabilities]
+    return names or ["agent_loop"]
+
+
+def _lesson_capability(candidate: Any, outcome: Any) -> str:
+    """Return the exact unavailable capability, otherwise the primary capability."""
+    failed_capability = outcome.signals.get("capability")
+    if outcome.failure_class and outcome.failure_class.value == "tool_unavailable":
+        if isinstance(failed_capability, str) and failed_capability:
+            return failed_capability
+    return _capability_names(candidate)[0]
 
 
 def _has_tables(conn: sqlite3.Connection) -> bool:
-    row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='missions'"
-    ).fetchone()
-    return row is not None
+    rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    names = {row[0] for row in rows}
+    return {
+        "missions",
+        "candidates",
+        "candidate_parents",
+        "ledger",
+        "outcomes",
+        "outcome_capabilities",
+    }.issubset(names)

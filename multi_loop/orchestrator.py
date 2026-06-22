@@ -854,9 +854,12 @@ class MissionOrchestrator:
             roles=[candidate.role],
             capabilities=candidate_capability_names(candidate),
             exclude_mission_id=mission.id,
-            limit=MAX_PITFALLS,
+            # Filtering stale tool lessons and duplicate remedies happens below;
+            # cap only after that filtering so valid older lessons are not hidden.
+            limit=None,
         )
         hints: list[str] = []
+        seen: set[str] = set()
         for lesson in lessons:
             # State-tied invalidation: a "tool unavailable" lesson is stale once the
             # capability has since been configured, so drop it rather than warn falsely.
@@ -867,8 +870,11 @@ class MissionOrchestrator:
                 and self.capabilities.available(lesson.capability)
             ):
                 continue
-            if lesson.remedy_hint:
+            if lesson.remedy_hint and lesson.remedy_hint not in seen:
+                seen.add(lesson.remedy_hint)
                 hints.append(lesson.remedy_hint)
+                if len(hints) >= MAX_PITFALLS:
+                    break
         return hints
 
     def _apply_verification(
