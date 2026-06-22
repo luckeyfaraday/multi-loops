@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+import time
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -13,6 +16,7 @@ AvailabilityCheck = Callable[[], bool]
 
 # Tokens that resolve to every registered capability.
 _ALL_TOKENS = frozenset({"all", "*"})
+_COMMAND_CHECK_CACHE: dict[tuple[str, ...], tuple[float, bool]] = {}
 
 
 class CapabilityRegistry:
@@ -90,6 +94,9 @@ class CapabilityRegistry:
             "requires_env": list(capability.requires_env),
             "missing_env": self.missing_env(name),
             "availability_check": capability.availability_check,
+            "runner": capability.runner,
+            "runner_command": capability.runner_command,
+            "setup_hint": capability.setup_hint,
         }
 
     def search_cards(
@@ -227,6 +234,65 @@ def default_capabilities() -> CapabilityRegistry:
             verification="Review result artifacts and optional verification commands.",
             tags=["agent", "goal-loop", "worker"],
         )
+    )
+    registry.register(
+        Capability(
+            name="codex_oauth_runner",
+            description=(
+                "Run unattended candidate work through the installed Codex CLI using its "
+                "existing ChatGPT OAuth session."
+            ),
+            toolset_or_backend="codex_cli",
+            side_effect_class=SideEffectClass.LOCAL_WRITE,
+            inputs=["candidate prompt", "workspace", "Codex OAuth session"],
+            outputs=["agent result", "artifacts", "execution transcript"],
+            artifact_types=["markdown", "terminal transcript", "files"],
+            availability_check="requires the codex CLI to be installed and logged in with ChatGPT",
+            cost_class="chatgpt_subscription",
+            latency_class="medium",
+            verification="Require candidate evidence and configured verification commands.",
+            tags=["codex", "oauth", "chatgpt", "agent", "scheduled", "runner"],
+            runner="agent_command",
+            runner_command="codex exec --sandbox workspace-write --skip-git-repo-check -",
+            setup_hint="Run 'codex login' and complete ChatGPT sign-in.",
+        ),
+        check=_codex_oauth_available,
+    )
+    registry.register(
+        Capability(
+            name="github_read",
+            description="Inspect GitHub repositories, pull requests, diffs, checks, and metadata with gh.",
+            toolset_or_backend="gh_cli",
+            side_effect_class=SideEffectClass.READ_ONLY,
+            inputs=["repository scope", "pull request"],
+            outputs=["diff", "checks", "metadata", "URLs"],
+            artifact_types=["json", "markdown", "URLs"],
+            availability_check="requires the gh CLI and an authenticated GitHub session",
+            cost_class="network_calls",
+            latency_class="short",
+            verification="Record repository, PR number, head SHA, and source URLs.",
+            tags=["github", "gh", "pull request", "review", "checks", "repository"],
+            setup_hint="Install gh, then run 'gh auth login'.",
+        ),
+        check=_github_cli_available,
+    )
+    registry.register(
+        Capability(
+            name="github_pr_comment",
+            description="Post issue-style or inline review comments on GitHub pull requests with gh.",
+            toolset_or_backend="gh_cli",
+            side_effect_class=SideEffectClass.MESSAGE_PERSON,
+            inputs=["repository", "pull request", "comment body", "explicit approval"],
+            outputs=["comment URL", "comment ID", "delivery status"],
+            artifact_types=["URL", "receipt", "markdown"],
+            availability_check="requires the gh CLI, GitHub authentication, and scoped approval",
+            cost_class="external_side_effect",
+            latency_class="short",
+            verification="Return the created comment URL or ID and verify it through gh api.",
+            tags=["github", "gh", "pull request", "review", "comment", "message"],
+            setup_hint="Install gh, run 'gh auth login', and approve PR-comment scope.",
+        ),
+        check=_github_cli_available,
     )
     registry.register(
         Capability(
@@ -407,6 +473,11 @@ def default_toolsets() -> list[Toolset]:
             capabilities=["scheduled_tick"],
         ),
         Toolset(
+            name="github_review",
+            description="Read GitHub pull requests and optionally post scoped review comments.",
+            capabilities=["github_read", "github_pr_comment", "codex_oauth_runner"],
+        ),
+        Toolset(
             name="company",
             description="Capabilities a company-building mission typically draws on.",
             includes=["research", "outreach", "media"],
@@ -433,3 +504,36 @@ def _capability_search_text(capability: Capability) -> set[str]:
         " ".join(capability.tags),
     )
     return _tokens(" ".join(parts))
+
+
+def _command_succeeds(command: list[str]) -> bool:
+    key = tuple(command)
+    cached = _COMMAND_CHECK_CACHE.get(key)
+    if cached is not None and time.monotonic() - cached[0] < 5:
+        return cached[1]
+    if shutil.which(command[0]) is None:
+        _COMMAND_CHECK_CACHE[key] = (time.monotonic(), False)
+        return False
+    try:
+        completed = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        _COMMAND_CHECK_CACHE[key] = (time.monotonic(), False)
+        return False
+    available = completed.returncode == 0
+    _COMMAND_CHECK_CACHE[key] = (time.monotonic(), available)
+    return available
+
+
+def _github_cli_available() -> bool:
+    return _command_succeeds(["gh", "auth", "status"])
+
+
+def _codex_oauth_available() -> bool:
+    return _command_succeeds(["codex", "login", "status"])

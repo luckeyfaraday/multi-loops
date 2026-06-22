@@ -56,6 +56,10 @@ class MissionDraft:
     autonomy_level: str = "local_only"
     approval_policy: str = "ask before external actions"
     workspace: str | None = None
+    execution_runner: str | None = None
+    runner_command: str | None = None
+    verification: list[str] = field(default_factory=list)
+    capability_approvals: dict[str, str] = field(default_factory=dict)
     confirmed_at: str | None = None
 
 

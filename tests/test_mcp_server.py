@@ -11,6 +11,7 @@ from multi_loop.mcp_server import (
     candidate_claim_impl,
     candidate_submit_result_impl,
     capability_describe_impl,
+    capability_add_command_impl,
     capability_list_impl,
     capability_search_impl,
     create_mission_impl,
@@ -93,7 +94,7 @@ class McpServerTests(unittest.TestCase):
                 session_id,
                 {
                     "success_criteria": "Acquire five validated design partners.",
-                    "requested_capabilities": ["agent_loop", "web_research"],
+                    "requested_capabilities": ["agent_loop", "shell_command"],
                 },
                 root=root,
                 expected_revision=revision,
@@ -221,6 +222,9 @@ class McpServerTests(unittest.TestCase):
         search = capability_search_impl("shell command local")
         described = capability_describe_impl("shell_command")
         unknown = capability_describe_impl("does_not_exist")
+        github = capability_search_impl(
+            "GitHub pull request review comments", include_unavailable=True
+        )
 
         self.assertEqual(listing["count"], len(listing["capabilities"]))
         self.assertLessEqual(available["count"], listing["count"])
@@ -228,7 +232,36 @@ class McpServerTests(unittest.TestCase):
         self.assertIn("shell_command", [card["name"] for card in search["results"]])
         self.assertTrue(described["available"])
         self.assertIn("error", unknown)
+        self.assertIn("github_pr_comment", [card["name"] for card in github["results"]])
         json.dumps({"listing": listing, "search": search, "described": described})
+
+    def test_mcp_onboarder_can_add_user_approved_command_capability(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = str(Path(tmpdir) / ".multi-loop")
+            opened = main_loop_open_impl(root=root, mission_seed="Use a command tool")
+            session_id = opened["session"]["id"]
+            mission_draft_update_impl(
+                session_id,
+                {"success_criteria": "Produce command evidence"},
+                root=root,
+            )
+
+            configured = capability_add_command_impl(
+                session_id,
+                "approved_command",
+                "A user-approved local command.",
+                "true",
+                "read_only",
+                "Yes, add this command.",
+                root=root,
+                runner="shell",
+            )
+            context = main_loop_context_impl(session_id, root=root)
+
+        self.assertNotIn("error", configured)
+        self.assertIn(
+            "approved_command", context["session"]["draft"]["requested_capabilities"]
+        )
 
     def test_toolset_impls(self):
         listing = toolset_list_impl()

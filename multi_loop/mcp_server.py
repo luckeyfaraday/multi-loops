@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .capabilities import default_capabilities
+from .capability_config import configured_capabilities
 from .index import MissionIndex
 from .main_agent import MainLoopService
 from .mcp_runs import MANAGER, mcp_runs_dir
@@ -204,6 +205,97 @@ def mission_confirm_impl(
             session_id,
             confirmed_by=confirmed_by,
             expected_revision=expected_revision,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def capability_setup_plan_impl(
+    session_id: str,
+    capability_names: list[str],
+    *,
+    root: str = DEFAULT_ROOT,
+) -> dict[str, Any]:
+    try:
+        return MainLoopService(root).capability_setup_plan(session_id, capability_names)
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def capability_setup_apply_impl(
+    session_id: str,
+    capability_names: list[str],
+    confirmation_quote: str,
+    *,
+    root: str = DEFAULT_ROOT,
+    approved_by: str = "user",
+) -> dict[str, Any]:
+    try:
+        return MainLoopService(root).capability_setup_apply(
+            session_id,
+            capability_names,
+            confirmation_quote=confirmation_quote,
+            approved_by=approved_by,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def capability_add_command_impl(
+    session_id: str,
+    name: str,
+    description: str,
+    command: str,
+    side_effect_class: str,
+    confirmation_quote: str,
+    *,
+    root: str = DEFAULT_ROOT,
+    runner: str = "agent_command",
+    approved_by: str = "user",
+) -> dict[str, Any]:
+    try:
+        return MainLoopService(root).add_command_capability(
+            session_id,
+            name=name,
+            description=description,
+            command=command,
+            side_effect_class=side_effect_class,
+            confirmation_quote=confirmation_quote,
+            runner=runner,
+            approved_by=approved_by,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def mission_capability_setup_plan_impl(
+    mission_id: str,
+    capability_names: list[str],
+    *,
+    root: str = DEFAULT_ROOT,
+) -> dict[str, Any]:
+    try:
+        return MainLoopService(root).mission_capability_setup_plan(
+            mission_id, capability_names
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def mission_capability_setup_apply_impl(
+    mission_id: str,
+    capability_names: list[str],
+    confirmation_quote: str,
+    *,
+    root: str = DEFAULT_ROOT,
+    approved_by: str = "user",
+) -> dict[str, Any]:
+    try:
+        return MainLoopService(root).mission_capability_setup_apply(
+            mission_id,
+            capability_names,
+            confirmation_quote=confirmation_quote,
+            approved_by=approved_by,
         )
     except Exception as exc:  # noqa: BLE001
         return _error(exc)
@@ -601,8 +693,8 @@ def tick_impl(*, root: str = DEFAULT_ROOT) -> dict[str, Any]:
     return to_dict(MissionScheduler(store=_store(root)).tick())
 
 
-def list_backends_impl() -> dict[str, Any]:
-    capabilities = default_capabilities()
+def list_backends_impl(*, root: str = DEFAULT_ROOT) -> dict[str, Any]:
+    capabilities = configured_capabilities(root)
     return {
         "runners": default_runner_registry().names(),
         "capabilities": [
@@ -613,12 +705,17 @@ def list_backends_impl() -> dict[str, Any]:
             }
             for capability in capabilities.list()
         ],
-        "notes": "MVP runners are local: mock, shell, and agent_command.",
+        "notes": (
+            "Runners are local: mock, shell, and agent_command. Configured command capabilities "
+            "and Codex OAuth can supply unattended execution."
+        ),
     }
 
 
-def capability_list_impl(*, available_only: bool = False) -> dict[str, Any]:
-    registry = default_capabilities()
+def capability_list_impl(
+    *, root: str = DEFAULT_ROOT, available_only: bool = False
+) -> dict[str, Any]:
+    registry = configured_capabilities(root)
     cards = [registry.describe(name) for name in registry.names()]
     if available_only:
         cards = [card for card in cards if card["available"]]
@@ -630,28 +727,31 @@ def capability_search_impl(
     *,
     limit: int = 5,
     include_unavailable: bool = False,
+    root: str = DEFAULT_ROOT,
 ) -> dict[str, Any]:
-    registry = default_capabilities()
+    registry = configured_capabilities(root)
     return {
         "query": query,
         "results": registry.search_cards(query, limit=limit, include_unavailable=include_unavailable),
     }
 
 
-def capability_describe_impl(name: str) -> dict[str, Any]:
-    registry = default_capabilities()
+def capability_describe_impl(name: str, *, root: str = DEFAULT_ROOT) -> dict[str, Any]:
+    registry = configured_capabilities(root)
     if registry.get(name) is None:
         return {"error": f"Unknown capability: {name}", "name": name}
     return registry.describe(name)
 
 
-def toolset_list_impl() -> dict[str, Any]:
-    registry = default_capabilities()
+def toolset_list_impl(*, root: str = DEFAULT_ROOT) -> dict[str, Any]:
+    registry = configured_capabilities(root)
     return {"toolsets": [registry.describe_toolset(name) for name in registry.toolset_names()]}
 
 
-def toolset_resolve_impl(names: list[str] | str) -> dict[str, Any]:
-    registry = default_capabilities()
+def toolset_resolve_impl(
+    names: list[str] | str, *, root: str = DEFAULT_ROOT
+) -> dict[str, Any]:
+    registry = configured_capabilities(root)
     requested = [names] if isinstance(names, str) else list(names)
     try:
         resolved = registry.resolve_names(requested)
@@ -711,7 +811,7 @@ def doctor_impl(root: str = DEFAULT_ROOT, cwd: str | None = None) -> dict[str, A
             "parent_writable": os.access(parent, os.W_OK),
         },
         "cwd": cwd_status,
-        "backends": list_backends_impl(),
+        "backends": list_backends_impl(root=root),
         "recommendations": [
             "Install with the optional MCP extra to run the server: pip install -e '.[mcp]'.",
             "run_generation detaches by default; monitor with run_status/run_tail/run_result.",
@@ -723,7 +823,19 @@ def doctor_impl(root: str = DEFAULT_ROOT, cwd: str | None = None) -> dict[str, A
 def build_server():
     from mcp.server.fastmcp import FastMCP
 
-    mcp = FastMCP("multi-loop")
+    mcp = FastMCP(
+        "multi-loop",
+        instructions=(
+            "For interactive onboarding, always start with main_loop_open; do not use the legacy "
+            "onboard tool. Build the mission through mission_draft_update. Search capabilities, "
+            "then call capability_setup_plan for every required tool or backend. Show the plan and "
+            "ask the user before capability_setup_apply or capability_add_command. Do not call "
+            "mission_confirm until mission_draft_validate reports valid, all required capabilities "
+            "are available and approved, and scheduled missions have a real unattended runner. "
+            "The root argument is the multi-loop state directory (normally <workspace>/.multi-loop), "
+            "not the workspace itself. The MCP host agent conducts the conversation and execution."
+        ),
+    )
 
     @mcp.tool()
     def main_loop_open(
@@ -872,13 +984,100 @@ def build_server():
         )
 
     @mcp.tool()
+    def capability_setup_plan(
+        session_id: str,
+        capability_names: list[str],
+        root: str = DEFAULT_ROOT,
+    ) -> dict[str, Any]:
+        """Plan required capability/config changes without applying them.
+
+        Show this plan to the user and ask permission before applying it.
+        """
+        return capability_setup_plan_impl(
+            session_id, capability_names, root=root
+        )
+
+    @mcp.tool()
+    def capability_setup_apply(
+        session_id: str,
+        capability_names: list[str],
+        confirmation_quote: str,
+        root: str = DEFAULT_ROOT,
+        approved_by: str = "user",
+    ) -> dict[str, Any]:
+        """Apply an available capability setup after explicit user confirmation."""
+        return capability_setup_apply_impl(
+            session_id,
+            capability_names,
+            confirmation_quote,
+            root=root,
+            approved_by=approved_by,
+        )
+
+    @mcp.tool()
+    def capability_add_command(
+        session_id: str,
+        name: str,
+        description: str,
+        command: str,
+        side_effect_class: str,
+        confirmation_quote: str,
+        root: str = DEFAULT_ROOT,
+        runner: str = "agent_command",
+        approved_by: str = "user",
+    ) -> dict[str, Any]:
+        """Persist a user-approved command as a new capability and add it to the draft.
+
+        Never embed credentials in the command. Ask the user before calling this tool.
+        """
+        return capability_add_command_impl(
+            session_id,
+            name,
+            description,
+            command,
+            side_effect_class,
+            confirmation_quote,
+            root=root,
+            runner=runner,
+            approved_by=approved_by,
+        )
+
+    @mcp.tool()
+    def mission_capability_setup_plan(
+        mission_id: str,
+        capability_names: list[str],
+        root: str = DEFAULT_ROOT,
+    ) -> dict[str, Any]:
+        """Plan capability and runner changes for an existing mission without applying them."""
+        return mission_capability_setup_plan_impl(
+            mission_id, capability_names, root=root
+        )
+
+    @mcp.tool()
+    def mission_capability_setup_apply(
+        mission_id: str,
+        capability_names: list[str],
+        confirmation_quote: str,
+        root: str = DEFAULT_ROOT,
+        approved_by: str = "user",
+    ) -> dict[str, Any]:
+        """Apply approved capability and unattended-runner changes to an existing mission."""
+        return mission_capability_setup_apply_impl(
+            mission_id,
+            capability_names,
+            confirmation_quote,
+            root=root,
+            approved_by=approved_by,
+        )
+
+    @mcp.tool()
     def onboard(
         mission: str = "",
         root: str = DEFAULT_ROOT,
         answers: dict[str, str] | None = None,
         create: bool = True,
     ) -> dict[str, Any]:
-        """Build an onboarding plan and optionally create a mission."""
+        """Legacy deterministic onboarding for scripts; do not use for interactive onboarding."""
         return onboard_impl(mission, root=root, answers=answers, create=create)
 
     @mcp.tool()
@@ -1073,38 +1272,47 @@ def build_server():
         return run_list_impl()
 
     @mcp.tool()
-    def list_backends() -> dict[str, Any]:
+    def list_backends(root: str = DEFAULT_ROOT) -> dict[str, Any]:
         """List configured local runners and capability availability."""
-        return list_backends_impl()
+        return list_backends_impl(root=root)
 
     @mcp.tool()
-    def capability_list(available_only: bool = False) -> dict[str, Any]:
+    def capability_list(
+        root: str = DEFAULT_ROOT, available_only: bool = False
+    ) -> dict[str, Any]:
         """List capability cards, optionally only those currently available."""
-        return capability_list_impl(available_only=available_only)
+        return capability_list_impl(root=root, available_only=available_only)
 
     @mcp.tool()
     def capability_search(
         query: str,
+        root: str = DEFAULT_ROOT,
         limit: int = 5,
         include_unavailable: bool = False,
     ) -> dict[str, Any]:
         """Search capability cards by token overlap for on-demand discovery."""
-        return capability_search_impl(query, limit=limit, include_unavailable=include_unavailable)
+        return capability_search_impl(
+            query, root=root, limit=limit, include_unavailable=include_unavailable
+        )
 
     @mcp.tool()
-    def capability_describe(name: str) -> dict[str, Any]:
+    def capability_describe(
+        name: str, root: str = DEFAULT_ROOT
+    ) -> dict[str, Any]:
         """Return the full capability card, including availability and missing env."""
-        return capability_describe_impl(name)
+        return capability_describe_impl(name, root=root)
 
     @mcp.tool()
-    def toolset_list() -> dict[str, Any]:
+    def toolset_list(root: str = DEFAULT_ROOT) -> dict[str, Any]:
         """List capability toolsets with their resolved members."""
-        return toolset_list_impl()
+        return toolset_list_impl(root=root)
 
     @mcp.tool()
-    def toolset_resolve(names: list[str]) -> dict[str, Any]:
+    def toolset_resolve(
+        names: list[str], root: str = DEFAULT_ROOT
+    ) -> dict[str, Any]:
         """Resolve toolset/capability names (and all/*) to a flat capability list."""
-        return toolset_resolve_impl(names)
+        return toolset_resolve_impl(names, root=root)
 
     @mcp.tool()
     def search(

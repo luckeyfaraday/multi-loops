@@ -279,6 +279,47 @@ class MainLoopAgent:
                     include_unavailable=True,
                 )
             }
+        if call.name == "capability_setup_plan":
+            return self.service.capability_setup_plan(
+                session_id, args.get("capability_names") or []
+            )
+        if call.name == "capability_setup_apply":
+            quote = str(args.get("confirmation_quote") or "").strip()
+            self._require_user_quote(session_id, quote)
+            return _tool_view(
+                self.service.capability_setup_apply(
+                    session_id,
+                    args.get("capability_names") or [],
+                    confirmation_quote=quote,
+                    approved_by="cli_user",
+                )
+            )
+        if call.name == "capability_add_command":
+            quote = str(args.get("confirmation_quote") or "").strip()
+            self._require_user_quote(session_id, quote)
+            return self.service.add_command_capability(
+                session_id,
+                name=str(args["name"]),
+                description=str(args["description"]),
+                command=str(args["command"]),
+                side_effect_class=str(args["side_effect_class"]),
+                confirmation_quote=quote,
+                runner=str(args.get("runner") or "agent_command"),
+                approved_by="cli_user",
+            )
+        if call.name == "mission_capability_setup_plan":
+            return self.service.mission_capability_setup_plan(
+                str(args["mission_id"]), args.get("capability_names") or []
+            )
+        if call.name == "mission_capability_setup_apply":
+            quote = str(args.get("confirmation_quote") or "").strip()
+            self._require_user_quote(session_id, quote)
+            return self.service.mission_capability_setup_apply(
+                str(args["mission_id"]),
+                args.get("capability_names") or [],
+                confirmation_quote=quote,
+                approved_by="cli_user",
+            )
         if call.name == "mission_status":
             mission = self.service.missions.load_mission(str(args["mission_id"]))
             return {"mission": to_dict(mission)}
@@ -438,6 +479,63 @@ TOOL_SCHEMAS = [
         "Search capability cards before recommending tools.",
         {"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 20}},
         ["query"],
+    ),
+    _function(
+        "capability_setup_plan",
+        "Plan capability additions, approvals, and runner config without changing state.",
+        {"capability_names": {"type": "array", "items": {"type": "string"}}},
+        ["capability_names"],
+    ),
+    _function(
+        "capability_setup_apply",
+        "Apply a capability setup only after the user explicitly approves the shown plan.",
+        {
+            "capability_names": {"type": "array", "items": {"type": "string"}},
+            "confirmation_quote": {"type": "string"},
+        },
+        ["capability_names", "confirmation_quote"],
+    ),
+    _function(
+        "capability_add_command",
+        "Persist a user-approved command as a new tool. Never embed credentials.",
+        {
+            "name": {"type": "string"},
+            "description": {"type": "string"},
+            "command": {"type": "string"},
+            "side_effect_class": {
+                "type": "string",
+                "enum": [
+                    "read_only",
+                    "local_write",
+                    "external_write",
+                    "public_publish",
+                    "spend_money",
+                    "message_person",
+                ],
+            },
+            "runner": {"type": "string", "enum": ["agent_command", "shell"]},
+            "confirmation_quote": {"type": "string"},
+        },
+        ["name", "description", "command", "side_effect_class", "confirmation_quote"],
+    ),
+    _function(
+        "mission_capability_setup_plan",
+        "Plan tool, approval, and runner changes for an existing mission.",
+        {
+            "mission_id": {"type": "string"},
+            "capability_names": {"type": "array", "items": {"type": "string"}},
+        },
+        ["mission_id", "capability_names"],
+    ),
+    _function(
+        "mission_capability_setup_apply",
+        "Apply shown capability changes to an existing mission after user confirmation.",
+        {
+            "mission_id": {"type": "string"},
+            "capability_names": {"type": "array", "items": {"type": "string"}},
+            "confirmation_quote": {"type": "string"},
+        },
+        ["mission_id", "capability_names", "confirmation_quote"],
     ),
     _function("mission_status", "Read canonical mission state.", {"mission_id": {"type": "string"}}, ["mission_id"]),
     _function(

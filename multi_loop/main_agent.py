@@ -13,9 +13,19 @@ from .agent_sessions import (
     MainLoopSessionStore,
     MissionDraft,
 )
-from .capabilities import CapabilityRegistry, default_capabilities
-from .models import Budget, ExecutionProfile, to_dict, utc_now_iso
+from .capabilities import CapabilityRegistry
+from .capability_config import ConfiguredCapabilityStore, configured_capabilities
+from .models import (
+    Budget,
+    Event,
+    ExecutionProfile,
+    LedgerEntry,
+    SideEffectClass,
+    to_dict,
+    utc_now_iso,
+)
 from .orchestrator import MissionOrchestrator
+from .policy import APPROVAL_REQUIRED
 from .schedule_util import parse_schedule
 from .storage import MissionStore
 
@@ -32,6 +42,11 @@ distinct operations. Never claim that an operation happened unless its tool retu
 Show the complete draft and wait for a later user message that explicitly confirms it before
 calling mission confirmation; an initial task request is not confirmation of the derived draft.
 External writes, publishing, messaging people, and spending require capability-scoped approval.
+Before confirming a mission, identify every capability and execution prerequisite it needs. If a
+capability, dependency, tool, credential, runner, or schedule backend is missing, explain the
+concrete configuration change and ask whether the user wants you to apply it. Use capability setup
+tools only after explicit approval. Do not call onboarding complete while required capabilities are
+unavailable or a scheduled mission lacks a real unattended runner.
 During onboarding, remain read-only except for the main-loop session and mission draft.
 """
 
@@ -47,6 +62,9 @@ _DRAFT_FIELDS = frozenset(
         "autonomy_level",
         "approval_policy",
         "workspace",
+        "execution_runner",
+        "runner_command",
+        "verification",
     }
 )
 
@@ -63,7 +81,7 @@ class MainLoopService:
         self.root = Path(root)
         self.sessions = MainLoopSessionStore(self.root)
         self.missions = MissionStore(self.root)
-        self.capabilities = capabilities or default_capabilities()
+        self.capabilities = capabilities or configured_capabilities(self.root)
 
     def open(
         self,
@@ -234,7 +252,7 @@ class MainLoopService:
             capability = self.capabilities.get(name)
             if capability is not None and not self.capabilities.available(name):
                 unavailable.append(name)
-                warnings.append(
+                errors.append(
                     f"Capability {name} is unavailable: "
                     f"{capability.availability_check or 'requires setup'}."
                 )
@@ -245,6 +263,225 @@ class MainLoopService:
             "unavailable_capabilities": unavailable,
             "ready_to_create": not errors and session.active_mission_id is None,
         }
+
+    def capability_setup_plan(
+        self,
+        session_id: str,
+        capability_names: list[str],
+    ) -> dict[str, Any]:
+        """Describe concrete changes and approvals before mutating configuration."""
+        session = self.sessions.load(session_id)
+        requested = _clean_strings(capability_names)
+        unknown = [name for name in requested if self.capabilities.get(name) is None]
+        cards = [self.capabilities.describe(name) for name in requested if name not in unknown]
+        unavailable = [card for card in cards if not card["available"]]
+        side_effects = [
+            card for card in cards if SideEffectClass(card["side_effect_class"]) in APPROVAL_REQUIRED
+        ]
+        additions = [name for name in requested if name not in session.draft.requested_capabilities]
+        runner_card = next((card for card in cards if card.get("runner_command")), None)
+        if session.draft.schedule and runner_card is None:
+            codex = self.capabilities.describe("codex_oauth_runner")
+            if codex["available"]:
+                runner_card = codex
+                if "codex_oauth_runner" not in additions and "codex_oauth_runner" not in session.draft.requested_capabilities:
+                    additions.append("codex_oauth_runner")
+            else:
+                unavailable.append(codex)
+        if session.draft.schedule and "scheduled_tick" not in additions and "scheduled_tick" not in session.draft.requested_capabilities:
+            additions.append("scheduled_tick")
+        return {
+            "session_id": session_id,
+            "requested": requested,
+            "capability_cards": cards,
+            "changes": {
+                "add_to_mission": additions,
+                "execution_runner": runner_card.get("runner") if runner_card else None,
+                "runner_command": runner_card.get("runner_command") if runner_card else None,
+            },
+            "side_effect_approvals": [
+                {
+                    "capability": card["name"],
+                    "side_effect_class": card["side_effect_class"],
+                    "scope_must_be_confirmed": True,
+                }
+                for card in side_effects
+            ],
+            "unavailable": unavailable,
+            "unknown": unknown,
+            "requires_user_approval": bool(additions or side_effects or runner_card),
+            "can_apply": not unknown and not unavailable,
+            "instruction": (
+                "Show these changes and side-effect scopes to the user. Call capability_setup_apply "
+                "only after the user explicitly agrees."
+            ),
+        }
+
+    def capability_setup_apply(
+        self,
+        session_id: str,
+        capability_names: list[str],
+        *,
+        confirmation_quote: str,
+        approved_by: str = "user",
+    ) -> dict[str, Any]:
+        if not confirmation_quote.strip():
+            raise ValueError("Explicit user confirmation is required before changing capability config.")
+        plan = self.capability_setup_plan(session_id, capability_names)
+        if not plan["can_apply"]:
+            blockers = [*plan["unknown"], *[card["name"] for card in plan["unavailable"]]]
+            raise ValueError("Capability setup has unresolved prerequisites: " + ", ".join(blockers))
+
+        def mutate(session: MainLoopSession) -> None:
+            for name in plan["changes"]["add_to_mission"]:
+                if name not in session.draft.requested_capabilities:
+                    session.draft.requested_capabilities.append(name)
+            for approval in plan["side_effect_approvals"]:
+                session.draft.capability_approvals[approval["capability"]] = approved_by.strip()
+            if plan["changes"]["execution_runner"]:
+                session.draft.execution_runner = plan["changes"]["execution_runner"]
+                session.draft.runner_command = plan["changes"]["runner_command"]
+            session.draft.confirmed_at = None
+            session.phase = AgentPhase.SCOPING
+
+        self.sessions.mutate(
+            session_id,
+            mutate,
+            entry_type="capability_setup_applied",
+            data={
+                "capabilities": plan["changes"]["add_to_mission"],
+                "side_effect_approvals": plan["side_effect_approvals"],
+                "confirmation_quote": confirmation_quote.strip(),
+                "approved_by": approved_by.strip(),
+                "execution_runner": plan["changes"]["execution_runner"],
+            },
+        )
+        return self.context(session_id)
+
+    def add_command_capability(
+        self,
+        session_id: str,
+        *,
+        name: str,
+        description: str,
+        command: str,
+        side_effect_class: str,
+        confirmation_quote: str,
+        runner: str = "agent_command",
+        approved_by: str = "user",
+    ) -> dict[str, Any]:
+        """Add a user-approved command tool to persistent multi-loop config."""
+        configured = ConfiguredCapabilityStore(self.root).add_command(
+            name=name,
+            description=description,
+            command=command,
+            side_effect_class=side_effect_class,
+            configured_by=approved_by,
+            approval_evidence=confirmation_quote,
+            runner=runner,
+        )
+        self.capabilities = configured_capabilities(self.root)
+        context = self.capability_setup_apply(
+            session_id,
+            [configured.capability.name],
+            confirmation_quote=confirmation_quote,
+            approved_by=approved_by,
+        )
+        return {"configured_capability": to_dict(configured), "context": context}
+
+    def mission_capability_setup_plan(
+        self,
+        mission_id: str,
+        capability_names: list[str],
+    ) -> dict[str, Any]:
+        """Plan capability and runner changes for an already-created mission."""
+        mission = self.missions.load_mission(mission_id)
+        requested = _clean_strings(capability_names)
+        unknown = [name for name in requested if self.capabilities.get(name) is None]
+        cards = [self.capabilities.describe(name) for name in requested if name not in unknown]
+        unavailable = [card for card in cards if not card["available"]]
+        additions = [name for name in requested if name not in mission.selected_capabilities]
+        runner_card = next((card for card in cards if card.get("runner_command")), None)
+        if mission.schedule and runner_card is None:
+            codex = self.capabilities.describe("codex_oauth_runner")
+            if codex["available"]:
+                runner_card = codex
+                if "codex_oauth_runner" not in additions:
+                    additions.append("codex_oauth_runner")
+            else:
+                unavailable.append(codex)
+        if mission.schedule and "scheduled_tick" not in additions and "scheduled_tick" not in mission.selected_capabilities:
+            additions.append("scheduled_tick")
+        approvals = [
+            card
+            for card in cards
+            if SideEffectClass(card["side_effect_class"]) in APPROVAL_REQUIRED
+            and card["name"] not in mission.approvals
+        ]
+        return {
+            "mission_id": mission_id,
+            "changes": {
+                "add_to_mission": additions,
+                "execution_runner": runner_card.get("runner") if runner_card else None,
+                "runner_command": runner_card.get("runner_command") if runner_card else None,
+            },
+            "side_effect_approvals": [
+                {"capability": card["name"], "side_effect_class": card["side_effect_class"]}
+                for card in approvals
+            ],
+            "unknown": unknown,
+            "unavailable": unavailable,
+            "can_apply": not unknown and not unavailable,
+            "requires_user_approval": bool(additions or approvals or runner_card),
+        }
+
+    def mission_capability_setup_apply(
+        self,
+        mission_id: str,
+        capability_names: list[str],
+        *,
+        confirmation_quote: str,
+        approved_by: str = "user",
+    ) -> dict[str, Any]:
+        if not confirmation_quote.strip():
+            raise ValueError("Explicit user confirmation is required before changing mission config.")
+        plan = self.mission_capability_setup_plan(mission_id, capability_names)
+        if not plan["can_apply"]:
+            blockers = [*plan["unknown"], *[card["name"] for card in plan["unavailable"]]]
+            raise ValueError("Mission capability setup has unresolved prerequisites: " + ", ".join(blockers))
+        mission = self.missions.load_mission(mission_id)
+        for name in plan["changes"]["add_to_mission"]:
+            if name not in mission.selected_capabilities:
+                mission.selected_capabilities.append(name)
+        for approval in plan["side_effect_approvals"]:
+            mission.approvals[approval["capability"]] = approved_by.strip()
+        if plan["changes"]["execution_runner"]:
+            mission.execution_profile.runner = plan["changes"]["execution_runner"]
+            mission.execution_profile.runner_command = plan["changes"]["runner_command"]
+        self.missions.append_event(
+            Event(
+                mission_id=mission.id,
+                event_type="mission_capability_setup_applied",
+                data={
+                    "capabilities": plan["changes"]["add_to_mission"],
+                    "side_effect_approvals": plan["side_effect_approvals"],
+                    "execution_runner": plan["changes"]["execution_runner"],
+                    "confirmation_quote": confirmation_quote.strip(),
+                },
+            )
+        )
+        entry = LedgerEntry(
+            mission_id=mission.id,
+            event_type="mission_capability_setup_applied",
+            summary=(
+                "Configured capabilities: "
+                + ", ".join(plan["changes"]["add_to_mission"] or capability_names)
+            ),
+        )
+        self.missions.append_ledger(entry)
+        mission.ledger.append(entry.id)
+        self.missions.save_mission(mission)
+        return {"mission": to_dict(mission), "plan": plan}
 
     def confirm(
         self,
@@ -280,7 +517,12 @@ class MainLoopService:
             controller=controller,
             provider_id=session.provider_id,
             model=provider_model,
-            runner="native_tool_loop" if controller == "cli_agent" else "mcp_host_tools",
+            runner=(
+                session.draft.execution_runner
+                or ("native_tool_loop" if controller == "cli_agent" else "mcp_host_tools")
+            ),
+            runner_command=session.draft.runner_command,
+            verification=list(session.draft.verification),
             workspace=session.draft.workspace,
             autonomy_level=session.draft.autonomy_level,
         )
@@ -301,6 +543,7 @@ class MainLoopService:
             selected_capabilities=list(session.draft.requested_capabilities),
             onboarding_session_id=session.id,
             budget=session.draft.budget,
+            approvals=dict(session.draft.capability_approvals),
         )
 
         def mutate(current: MainLoopSession) -> None:
@@ -353,11 +596,27 @@ class MainLoopService:
         unknown = [name for name in draft.requested_capabilities if self.capabilities.get(name) is None]
         if unknown:
             errors.append("unknown capabilities: " + ", ".join(sorted(set(unknown))))
+        unapproved = [
+            name
+            for name in draft.requested_capabilities
+            if self.capabilities.get(name) is not None
+            and self.capabilities.require(name).side_effect_class in APPROVAL_REQUIRED
+            and name not in draft.capability_approvals
+        ]
+        if unapproved:
+            errors.append(
+                "capabilities require explicit scoped approval: "
+                + ", ".join(sorted(set(unapproved)))
+            )
         if draft.schedule:
             try:
                 parse_schedule(draft.schedule)
             except ValueError as exc:
                 errors.append(str(exc))
+            if draft.execution_runner not in {"agent_command", "shell"}:
+                errors.append("scheduled missions require a configured unattended runner")
+            if not draft.runner_command:
+                errors.append("scheduled missions require an executable runner command")
         for field_name in ("max_iterations", "max_seconds", "max_cost_usd", "max_tokens"):
             value = getattr(draft.budget, field_name)
             if value is not None and value <= 0:
@@ -367,7 +626,14 @@ class MainLoopService:
     def _normalize_patch(self, patch: dict[str, Any]) -> dict[str, Any]:
         normalized: dict[str, Any] = {}
         for key, value in patch.items():
-            if key in {"statement", "success_criteria", "autonomy_level", "approval_policy"}:
+            if key in {
+                "statement",
+                "success_criteria",
+                "autonomy_level",
+                "approval_policy",
+                "execution_runner",
+                "runner_command",
+            }:
                 normalized[key] = str(value).strip()
             elif key in {"schedule", "workspace"}:
                 clean = str(value).strip() if value is not None else ""
@@ -383,6 +649,10 @@ class MainLoopService:
             elif key == "requested_capabilities":
                 if not isinstance(value, list):
                     raise ValueError("requested_capabilities must be a list")
+                normalized[key] = _clean_strings(value)
+            elif key == "verification":
+                if not isinstance(value, list):
+                    raise ValueError("verification must be a list")
                 normalized[key] = _clean_strings(value)
             elif key == "budget":
                 if not isinstance(value, dict):

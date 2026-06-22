@@ -66,6 +66,8 @@ class ExecutionProfile:
     provider_id: str | None = None
     model: str | None = None
     runner: str = "mock"
+    runner_command: str | None = None
+    verification: list[str] = field(default_factory=list)
     workspace: str | None = None
     autonomy_level: str = "local_only"
 
@@ -95,6 +97,9 @@ class Capability:
     # Environment variables that must be set for this capability to be usable.
     # The registry treats a capability with any missing variable as unavailable.
     requires_env: list[str] = field(default_factory=list)
+    runner: str | None = None
+    runner_command: str | None = None
+    setup_hint: str | None = None
 
 
 @dataclass(slots=True)

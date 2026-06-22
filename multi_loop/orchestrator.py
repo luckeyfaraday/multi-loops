@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .capabilities import CapabilityRegistry, default_capabilities
+from .capabilities import CapabilityRegistry
+from .capability_config import configured_capabilities
 from .models import (
     Artifact,
     Budget,
@@ -75,7 +76,7 @@ class MissionOrchestrator:
     ) -> None:
         self.store = store or MissionStore()
         self.runners = runners or default_runner_registry()
-        self.capabilities = capabilities or default_capabilities()
+        self.capabilities = capabilities or configured_capabilities(self.store.root)
         self.planner = planner or HeuristicPortfolioPlanner(self.capabilities)
         self.reviewer = reviewer or FitnessReviewer()
         self.workspace = Path(workspace).resolve() if workspace else None
