@@ -10,21 +10,24 @@ from .models import (
     CapabilityRef,
     Event,
     ExecutionProfile,
+    FailureClass,
     FitnessScore,
     Generation,
     GenerationState,
     LedgerEntry,
     Mission,
     MissionSchedule,
+    Outcome,
     PolicyGate,
     ScheduleState,
     SideEffectClass,
     Toolset,
 )
+from .failures import FailureClassifier, RuleBasedClassifier
 from .index import LedgerHit, MissionIndex
 from .leases import MissionBusy, MissionLease, acquire_mission_lease
 from .orchestrator import CandidateClaim, GenerationRunResult, MissionOrchestrator, ScheduleNotConfigured
-from .planning import FitnessReviewer, HeuristicPortfolioPlanner, PortfolioPlan
+from .planning import FitnessReviewer, HeuristicPortfolioPlanner, PortfolioPlan, collect_pitfalls
 from .policy import PathEscape, prepare_candidate, resolve_within, side_effect_directive
 from .scheduler import MissionScheduler, SchedulerTickReport, TickResult
 from .onboarding import (
@@ -69,6 +72,8 @@ __all__ = [
     "CapabilityRegistry",
     "Event",
     "ExecutionProfile",
+    "FailureClass",
+    "FailureClassifier",
     "FitnessScore",
     "FitnessReviewer",
     "Generation",
@@ -109,7 +114,9 @@ __all__ = [
     "OnboardingEngine",
     "OnboardingPlan",
     "OnboardingQuestion",
+    "Outcome",
     "PolicyGate",
+    "RuleBasedClassifier",
     "AgentCommandRunner",
     "MockRunner",
     "RunRequest",
@@ -121,6 +128,7 @@ __all__ = [
     "VerificationResult",
     "acquire_mission_lease",
     "collect_answers",
+    "collect_pitfalls",
     "compute_next_run",
     "default_capabilities",
     "default_runner_registry",

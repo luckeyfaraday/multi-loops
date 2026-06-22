@@ -41,6 +41,24 @@ class CandidateState(str, Enum):
     DISCARDED = "discarded"
 
 
+class FailureClass(str, Enum):
+    """A closed taxonomy of why a candidate loop did not succeed.
+
+    Keeping the set closed is what makes failures aggregatable: free-text
+    summaries cannot be pattern-matched across loops, but a class can drive a
+    specific recovery in the planner and a targeted hint in the next prompt.
+    """
+
+    POLICY_BLOCKED = "policy_blocked"  # approval gate withheld
+    TOOL_UNAVAILABLE = "tool_unavailable"  # required capability missing/unavailable
+    RESOURCE_EXHAUSTED = "resource_exhausted"  # timeout or budget/iteration/token cap
+    EXECUTION_ERROR = "execution_error"  # crash, exception, or nonzero exit
+    VERIFICATION_FAILED = "verification_failed"  # ran clean but evidence check failed
+    BAD_OUTPUT = "bad_output"  # empty/thin/unusable result
+    STRATEGY_ERROR = "strategy_error"  # completed but in the wrong direction
+    UNKNOWN = "unknown"
+
+
 class GenerationState(str, Enum):
     """Lifecycle state for a durable generation, including agent-driven runs."""
 
@@ -143,6 +161,26 @@ class FitnessScore:
 
 
 @dataclass(slots=True)
+class Outcome:
+    """A structured record of how a candidate loop turned out.
+
+    Recorded for successes and failures alike so the planner and future prompts
+    can react to *why* something happened, not just whether it did. The
+    ``remedy_hint`` is the short, agent-readable lesson surfaced to later loops.
+    """
+
+    candidate_loop_id: str
+    success: bool
+    failure_class: FailureClass | None = None
+    failure_subreason: str = ""
+    severity: str = "normal"  # info | normal | blocking
+    remedy_hint: str = ""
+    confidence: float = 0.5
+    signals: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
 class CandidateLoop:
     goal: str
     success_criteria: str
@@ -160,6 +198,7 @@ class CandidateLoop:
     result: str | None = None
     artifacts: list[Artifact] = field(default_factory=list)
     fitness: FitnessScore | None = None
+    outcome: Outcome | None = None
     submission_id: str | None = None
     claim_token: str | None = None
     claimed_by: str | None = None

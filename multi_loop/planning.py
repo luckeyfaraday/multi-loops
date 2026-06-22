@@ -6,14 +6,20 @@ from dataclasses import dataclass, field
 
 from .capabilities import CapabilityRegistry, default_capabilities
 from .models import (
+    Budget,
     CandidateLoop,
     CandidateState,
     CapabilityRef,
+    FailureClass,
     FitnessScore,
     Mission,
 )
 from .policy import attach_policy_gates, candidate_blocked_now
 from .runners import RunResult
+
+# Cap on how many distinct failure lessons are injected into a single prompt, so
+# an agent gets the most relevant warnings without drowning in stale advice.
+_MAX_PITFALLS = 3
 
 _CAPABILITY_RUNNERS: dict[str, str] = {
     "agent_loop": "mock",
@@ -102,6 +108,14 @@ class HeuristicPortfolioPlanner:
             for candidate in previous.candidate_loops
             if candidate.state == CandidateState.FAILED
         ]
+        unavailable = [
+            candidate
+            for candidate in previous.candidate_loops
+            if candidate.state == CandidateState.DISCARDED
+            and candidate.outcome is not None
+            and candidate.outcome.failure_class is FailureClass.TOOL_UNAVAILABLE
+            and candidate_blocked_now(candidate, mission, self.capabilities)
+        ]
         # Candidates discarded because a policy gate blocked them are not retried
         # blindly (that would loop forever while approval is withheld). But once
         # their capability has since been approved, resume the work.
@@ -130,17 +144,10 @@ class HeuristicPortfolioPlanner:
             candidates.append(child)
             mutations.append(f"narrow_scope:{winner.id}->{child.id}")
 
-        for failed in failures:
-            child = _base_loop(
-                mission,
-                role=f"{failed.role}_retry",
-                goal=f"Retry with a narrower scope after failure: {failed.goal}",
-                success_criteria="Return a smaller scoped result that can complete under current constraints.",
-                capabilities=_capability_names(failed),
-                parent_ids=[failed.id],
-            )
+        for failed in [*failures, *unavailable]:
+            child, mutation = _retry_for_failure(mission, failed)
             candidates.append(child)
-            mutations.append(f"retry_narrow:{failed.id}->{child.id}")
+            mutations.append(mutation)
 
         for blocked in recoverable:
             child = _base_loop(
@@ -256,6 +263,147 @@ def _base_loop(
         dependencies=dependencies or [],
         required_capabilities=refs,
     )
+
+
+def _retry_for_failure(mission: Mission, failed: CandidateLoop) -> tuple[CandidateLoop, str]:
+    """Spawn a recovery candidate tailored to *why* the prior attempt failed.
+
+    The generic fallback (narrow the scope) is kept for unclassified or
+    thin-output failures, but a known failure class drives a targeted retry: a
+    timeout gets a smaller scope and a raised budget, an execution error gets the
+    failure detail to debug, a verification failure is told to produce checkable
+    evidence, and an unavailable tool becomes a human setup task rather than a
+    blind retry that would just fail again.
+    """
+    failure_class = failed.outcome.failure_class if failed.outcome else None
+    capabilities = _capability_names(failed)
+
+    if failure_class is FailureClass.RESOURCE_EXHAUSTED:
+        child = _base_loop(
+            mission,
+            role=f"{failed.role}_rescoped",
+            goal=(
+                "The prior attempt ran out of time or budget. Split the work into "
+                f"smaller steps and complete a reduced scope of: {failed.goal}"
+            ),
+            success_criteria="Return a smaller, fully completed result that fits within budget.",
+            capabilities=capabilities,
+            parent_ids=[failed.id],
+        )
+        child.budget = _raised_budget(failed.budget)
+        return child, f"retry_rescope:{failed.id}->{child.id}"
+
+    if failure_class is FailureClass.EXECUTION_ERROR:
+        child = _base_loop(
+            mission,
+            role=f"{failed.role}_repair",
+            goal=(
+                f"The prior attempt failed during execution ({failed.result or 'no detail'}). "
+                f"Diagnose and fix the cause, then complete: {failed.goal}"
+            ),
+            success_criteria="Return a result that runs cleanly with the execution error resolved.",
+            capabilities=capabilities,
+            parent_ids=[failed.id],
+        )
+        return child, f"retry_repair:{failed.id}->{child.id}"
+
+    if failure_class is FailureClass.VERIFICATION_FAILED:
+        child = _base_loop(
+            mission,
+            role=f"{failed.role}_verify",
+            goal=(
+                "The prior attempt could not be verified. Produce concrete, checkable "
+                f"evidence and re-run verification for: {failed.goal}"
+            ),
+            success_criteria="Return verifiable evidence that passes the verification steps.",
+            capabilities=capabilities,
+            parent_ids=[failed.id],
+        )
+        child.verification = list(failed.verification)
+        return child, f"retry_verify:{failed.id}->{child.id}"
+
+    if failure_class is FailureClass.TOOL_UNAVAILABLE:
+        child = _base_loop(
+            mission,
+            role=f"{failed.role}_tool_setup",
+            goal=(
+                f"A required tool was unavailable for: {failed.goal}. Set up or configure "
+                f"the needed capability ({', '.join(capabilities)}) before this work can proceed."
+            ),
+            success_criteria="Confirm the required capability is configured, or document what is missing.",
+            capabilities=["manual_task"],
+            parent_ids=[failed.id],
+        )
+        return child, f"tool_setup:{failed.id}->{child.id}"
+
+    if failure_class is FailureClass.STRATEGY_ERROR:
+        child = _base_loop(
+            mission,
+            role=f"{failed.role}_pivot",
+            goal=(
+                "The prior approach went in the wrong direction. Try a materially "
+                f"different approach for: {failed.goal}"
+            ),
+            success_criteria="Return a result from a different approach than the prior attempt.",
+            capabilities=capabilities,
+            parent_ids=[failed.id],
+        )
+        return child, f"retry_pivot:{failed.id}->{child.id}"
+
+    # BAD_OUTPUT, UNKNOWN, or unclassified: narrow the scope (the prior default).
+    child = _base_loop(
+        mission,
+        role=f"{failed.role}_retry",
+        goal=f"Retry with a narrower scope after failure: {failed.goal}",
+        success_criteria="Return a smaller scoped result that can complete under current constraints.",
+        capabilities=capabilities,
+        parent_ids=[failed.id],
+    )
+    return child, f"retry_narrow:{failed.id}->{child.id}"
+
+
+def _raised_budget(budget: Budget) -> Budget:
+    """Double the bounded budget dimensions so a rescoped retry has more headroom."""
+
+    def _bump(value: float | int | None) -> float | int | None:
+        return value * 2 if value else value
+
+    return Budget(
+        max_iterations=_bump(budget.max_iterations),
+        max_seconds=_bump(budget.max_seconds),
+        max_cost_usd=budget.max_cost_usd,
+        max_tokens=_bump(budget.max_tokens),
+    )
+
+
+def collect_pitfalls(mission: Mission, candidate: CandidateLoop) -> list[str]:
+    """Return failure lessons from earlier loops relevant to this candidate.
+
+    Relevant means the prior loop is a parent of this candidate or shares a
+    capability with it. Hints are returned most-recent-first and capped at
+    ``_MAX_PITFALLS`` so the next prompt carries the freshest, most pertinent
+    warnings without stale advice crowding the context.
+    """
+    candidate_capabilities = set(_capability_names(candidate))
+    parent_ids = set(candidate.parent_ids)
+    hints: list[str] = []
+    seen: set[str] = set()
+    for generation in reversed(mission.generations):
+        for prior in generation.candidate_loops:
+            outcome = prior.outcome
+            if outcome is None or outcome.success or not outcome.remedy_hint:
+                continue
+            if prior.id not in parent_ids and not candidate_capabilities.intersection(
+                _capability_names(prior)
+            ):
+                continue
+            if outcome.remedy_hint in seen:
+                continue
+            seen.add(outcome.remedy_hint)
+            hints.append(outcome.remedy_hint)
+            if len(hints) >= _MAX_PITFALLS:
+                return hints
+    return hints
 
 
 def _capability_names(candidate: CandidateLoop) -> list[str]:

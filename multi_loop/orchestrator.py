@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .capabilities import CapabilityRegistry
 from .capability_config import configured_capabilities
+from .failures import FailureClassifier, RuleBasedClassifier
 from .models import (
     Artifact,
     Budget,
@@ -22,13 +23,14 @@ from .models import (
     LedgerEntry,
     Mission,
     MissionSchedule,
+    Outcome,
     ScheduleState,
     from_dict,
     new_id,
     utc_now_iso,
 )
 from .leases import acquire_mission_lease
-from .planning import FitnessReviewer, HeuristicPortfolioPlanner
+from .planning import FitnessReviewer, HeuristicPortfolioPlanner, collect_pitfalls
 from .policy import APPROVAL_REQUIRED, prepare_candidate, resolve_within, side_effect_directive
 from .runners import RunRequest, RunResult, RunnerRegistry, default_runner_registry, run_result_to_dict
 from .schedule_util import compute_next_run, initialize_schedule
@@ -72,6 +74,7 @@ class MissionOrchestrator:
         capabilities: CapabilityRegistry | None = None,
         planner: HeuristicPortfolioPlanner | None = None,
         reviewer: FitnessReviewer | None = None,
+        classifier: FailureClassifier | None = None,
         workspace: str | Path | None = None,
     ) -> None:
         self.store = store or MissionStore()
@@ -79,6 +82,7 @@ class MissionOrchestrator:
         self.capabilities = capabilities or configured_capabilities(self.store.root)
         self.planner = planner or HeuristicPortfolioPlanner(self.capabilities)
         self.reviewer = reviewer or FitnessReviewer()
+        self.classifier = classifier or RuleBasedClassifier()
         self.workspace = Path(workspace).resolve() if workspace else None
 
     def create_mission(
@@ -628,12 +632,14 @@ class MissionOrchestrator:
                         metadata={"error": type(exc).__name__},
                     )
 
+            candidate.result = result.summary
+            candidate.artifacts = result.artifacts
+            candidate.outcome = self.classifier.classify(candidate, result)
+            result.success = candidate.outcome.success
             if blocked_reason:
                 candidate.state = CandidateState.DISCARDED
             else:
                 candidate.state = CandidateState.COMPLETED if result.success else CandidateState.FAILED
-            candidate.result = result.summary
-            candidate.artifacts = result.artifacts
             candidate.fitness = self.reviewer.score(candidate, result)
             generation.fitness_scores.append(candidate.fitness)
 
@@ -667,6 +673,7 @@ class MissionOrchestrator:
                     "fitness": candidate.fitness.score,
                     "artifacts": [artifact.path for artifact in result.artifacts],
                     "blocked": blocked_reason is not None,
+                    **_outcome_event_fields(candidate.outcome),
                 },
                 generation_index,
                 candidate.id,
@@ -726,6 +733,8 @@ class MissionOrchestrator:
         blocked: bool = False,
     ) -> str:
         """Apply a runner or host result through one durable result path."""
+        candidate.outcome = self.classifier.classify(candidate, result)
+        result.success = candidate.outcome.success
         candidate.state = (
             CandidateState.DISCARDED
             if blocked
@@ -775,6 +784,7 @@ class MissionOrchestrator:
                 "artifacts": [artifact.path for artifact in result.artifacts],
                 "blocked": blocked,
                 "submission_id": candidate.submission_id,
+                **_outcome_event_fields(candidate.outcome),
             },
             generation.index,
             candidate.id,
@@ -798,6 +808,7 @@ class MissionOrchestrator:
             safety_directive=side_effect_directive(
                 candidate, mission, self.capabilities, allow_side_effects=allow_side_effects
             ),
+            pitfalls=collect_pitfalls(mission, candidate),
         )
         return runner.run(request)
 
@@ -860,6 +871,16 @@ class ScheduleNotConfigured(ValueError):
     def __init__(self, mission_id: str) -> None:
         super().__init__(f"Mission has no schedule: {mission_id}")
         self.mission_id = mission_id
+
+
+def _outcome_event_fields(outcome: Outcome | None) -> dict[str, object]:
+    """Surface the queryable parts of an outcome on the candidate_finished event."""
+    if outcome is None:
+        return {}
+    return {
+        "failure_class": outcome.failure_class.value if outcome.failure_class else None,
+        "remedy_hint": outcome.remedy_hint,
+    }
 
 
 def _require_schedule(mission: Mission) -> MissionSchedule:
