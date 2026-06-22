@@ -22,6 +22,9 @@ class RunRequest:
     # Safety directive constraining a spawned agent's outward actions; injected
     # into the agent prompt by the orchestrator (see policy.side_effect_directive).
     safety_directive: str = ""
+    # Lessons from earlier failures in this mission, injected into the prompt so a
+    # spawned agent avoids the same pitfalls (see planning.collect_pitfalls).
+    pitfalls: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -264,9 +267,17 @@ def _format_shell_output(command: str, exit_code: int | None, stdout: str, stder
 def _agent_prompt(request: RunRequest) -> str:
     candidate = request.candidate
     safety = f"{request.safety_directive}\n\n" if request.safety_directive else ""
+    pitfalls = ""
+    if request.pitfalls:
+        bullets = "\n".join(f"- {pitfall}" for pitfall in request.pitfalls)
+        pitfalls = (
+            "Known pitfalls from earlier in this mission (avoid repeating them):\n"
+            f"{bullets}\n\n"
+        )
     return (
         "You are running one candidate loop inside a multi-loop mission.\n\n"
         f"{safety}"
+        f"{pitfalls}"
         f"Mission: {request.mission.statement}\n"
         f"Mission success criteria: {request.mission.success_criteria}\n\n"
         f"Candidate goal: {candidate.goal}\n"

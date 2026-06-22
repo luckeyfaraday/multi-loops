@@ -254,6 +254,43 @@ from gaps or promising variants.
 Produce an integrated mission artifact: an implementation, plan, company brief,
 research dossier, product prototype, content package, or operating roadmap.
 
+## Failure Learning
+
+Every candidate run records a structured `Outcome` (`multi_loop/models.py`)
+alongside its fitness score, so the system can react to *why* a loop turned out
+the way it did, not just whether it succeeded. The rule-based
+`RuleBasedClassifier` (`multi_loop/failures.py`) maps signals already present on
+a finished run — policy blocks, timeouts, exit codes, exceptions, verification
+results, and output shape — onto a closed `FailureClass` taxonomy:
+
+- `policy_blocked` — an approval gate withheld the action.
+- `tool_unavailable` — a required capability was missing or unconfigured.
+- `resource_exhausted` — the run timed out or hit a budget cap.
+- `execution_error` — it crashed, raised, or exited nonzero.
+- `verification_failed` — it ran clean but its evidence check failed.
+- `bad_output` — it returned a thin or empty result.
+- `strategy_error` — it completed but in the wrong direction.
+- `unknown` — an unclassified failure.
+
+Classification is deterministic (keeping generations reproducible) and feeds two
+feedback paths within a mission:
+
+- **Cause-aware retries.** The planner branches its recovery on the failure
+  class instead of always narrowing scope: a timeout is rescoped with a raised
+  budget, an execution error is handed the failure detail to debug, a
+  verification failure is told to produce checkable evidence, and an unavailable
+  tool becomes a human setup task rather than a blind retry that would just fail
+  again (`HeuristicPortfolioPlanner._plan_evolved`).
+- **Pitfall injection.** Each `Outcome` carries a short, agent-readable
+  `remedy_hint`. Before a loop runs, `collect_pitfalls` gathers the hints from
+  earlier failures that share a capability with — or are a parent of — the
+  current candidate, and injects the most recent few into its prompt so the
+  spawned agent avoids the same rake.
+
+The failure class and remedy hint are also surfaced on the queryable
+`candidate_finished` event, which is the basis for a future cross-mission
+lessons layer.
+
 ## Examples
 
 ### Start A Company
