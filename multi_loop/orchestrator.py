@@ -10,6 +10,7 @@ from pathlib import Path
 from .capabilities import CapabilityRegistry
 from .capability_config import configured_capabilities
 from .failures import FailureClassifier, RuleBasedClassifier
+from .index import MissionIndex
 from .models import (
     Artifact,
     Budget,
@@ -17,6 +18,7 @@ from .models import (
     CandidateState,
     Event,
     ExecutionProfile,
+    FailureClass,
     FitnessScore,
     Generation,
     GenerationState,
@@ -30,7 +32,13 @@ from .models import (
     utc_now_iso,
 )
 from .leases import acquire_mission_lease
-from .planning import FitnessReviewer, HeuristicPortfolioPlanner, collect_pitfalls
+from .planning import (
+    candidate_capability_names,
+    collect_pitfalls,
+    FitnessReviewer,
+    HeuristicPortfolioPlanner,
+    MAX_PITFALLS,
+)
 from .policy import APPROVAL_REQUIRED, prepare_candidate, resolve_within, side_effect_directive
 from .runners import RunRequest, RunResult, RunnerRegistry, default_runner_registry, run_result_to_dict
 from .schedule_util import compute_next_run, initialize_schedule
@@ -75,6 +83,7 @@ class MissionOrchestrator:
         planner: HeuristicPortfolioPlanner | None = None,
         reviewer: FitnessReviewer | None = None,
         classifier: FailureClassifier | None = None,
+        lessons_index: MissionIndex | None = None,
         workspace: str | Path | None = None,
     ) -> None:
         self.store = store or MissionStore()
@@ -83,6 +92,10 @@ class MissionOrchestrator:
         self.planner = planner or HeuristicPortfolioPlanner(self.capabilities)
         self.reviewer = reviewer or FitnessReviewer()
         self.classifier = classifier or RuleBasedClassifier()
+        # Opt-in cross-mission learning: when an index is supplied, the orchestrator
+        # refreshes it from JSON each generation and retrieves lessons from *other*
+        # missions to warn the loops it spawns. Left None, behaviour is unchanged.
+        self.lessons_index = lessons_index
         self.workspace = Path(workspace).resolve() if workspace else None
 
     def create_mission(
@@ -581,6 +594,7 @@ class MissionOrchestrator:
         )
         mission.generations.append(generation)
         self.store.save_mission(mission)
+        self._refresh_lessons()
 
         events_written = 0
         ledger_entries_written = 0
@@ -808,9 +822,54 @@ class MissionOrchestrator:
             safety_directive=side_effect_directive(
                 candidate, mission, self.capabilities, allow_side_effects=allow_side_effects
             ),
-            pitfalls=collect_pitfalls(mission, candidate),
+            pitfalls=self._pitfalls_for(mission, candidate),
         )
         return runner.run(request)
+
+    def _refresh_lessons(self) -> None:
+        """Rebuild the derived lessons index from JSON before a generation reads it."""
+        if self.lessons_index is not None:
+            self.lessons_index.rebuild(self.store)
+
+    def _pitfalls_for(self, mission: Mission, candidate: CandidateLoop) -> list[str]:
+        """Combine same-mission and cross-mission failure lessons for one loop.
+
+        Same-mission lessons are the most specific, so the top two lead; relevant
+        cross-mission lessons follow, then any remaining same-mission ones. The
+        merged list is de-duplicated and capped so prompts stay focused.
+        """
+        same_mission = collect_pitfalls(mission, candidate)
+        if self.lessons_index is None:
+            return same_mission
+        cross_mission = self._cross_mission_pitfalls(mission, candidate)
+        merged: list[str] = []
+        for hint in [*same_mission[:2], *cross_mission, *same_mission[2:]]:
+            if hint and hint not in merged:
+                merged.append(hint)
+        return merged[:MAX_PITFALLS]
+
+    def _cross_mission_pitfalls(self, mission: Mission, candidate: CandidateLoop) -> list[str]:
+        assert self.lessons_index is not None
+        lessons = self.lessons_index.relevant_lessons(
+            roles=[candidate.role],
+            capabilities=candidate_capability_names(candidate),
+            exclude_mission_id=mission.id,
+            limit=MAX_PITFALLS,
+        )
+        hints: list[str] = []
+        for lesson in lessons:
+            # State-tied invalidation: a "tool unavailable" lesson is stale once the
+            # capability has since been configured, so drop it rather than warn falsely.
+            if (
+                lesson.failure_class == FailureClass.TOOL_UNAVAILABLE.value
+                and lesson.capability
+                and self.capabilities.get(lesson.capability) is not None
+                and self.capabilities.available(lesson.capability)
+            ):
+                continue
+            if lesson.remedy_hint:
+                hints.append(lesson.remedy_hint)
+        return hints
 
     def _apply_verification(
         self,

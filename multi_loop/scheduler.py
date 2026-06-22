@@ -60,9 +60,12 @@ class MissionScheduler:
     ) -> None:
         self.store = store or MissionStore()
         if orchestrator is None:
+            from .index import MissionIndex
             from .orchestrator import MissionOrchestrator
 
-            self.orchestrator = MissionOrchestrator(store=self.store)
+            self.orchestrator = MissionOrchestrator(
+                store=self.store, lessons_index=MissionIndex(self.store.root)
+            )
         else:
             self.orchestrator = orchestrator
 

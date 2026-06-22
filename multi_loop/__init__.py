@@ -24,10 +24,16 @@ from .models import (
     Toolset,
 )
 from .failures import FailureClassifier, RuleBasedClassifier
-from .index import LedgerHit, MissionIndex
+from .index import LedgerHit, Lesson, MissionIndex
 from .leases import MissionBusy, MissionLease, acquire_mission_lease
 from .orchestrator import CandidateClaim, GenerationRunResult, MissionOrchestrator, ScheduleNotConfigured
-from .planning import FitnessReviewer, HeuristicPortfolioPlanner, PortfolioPlan, collect_pitfalls
+from .planning import (
+    FitnessReviewer,
+    HeuristicPortfolioPlanner,
+    PortfolioPlan,
+    candidate_capability_names,
+    collect_pitfalls,
+)
 from .policy import PathEscape, prepare_candidate, resolve_within, side_effect_directive
 from .scheduler import MissionScheduler, SchedulerTickReport, TickResult
 from .onboarding import (
@@ -84,6 +90,7 @@ __all__ = [
     "PortfolioPlan",
     "LedgerEntry",
     "LedgerHit",
+    "Lesson",
     "Mission",
     "MissionBusy",
     "MissionIndex",
@@ -127,6 +134,7 @@ __all__ = [
     "VerificationReport",
     "VerificationResult",
     "acquire_mission_lease",
+    "candidate_capability_names",
     "collect_answers",
     "collect_pitfalls",
     "compute_next_run",
