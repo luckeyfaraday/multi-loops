@@ -6,6 +6,82 @@ from multi_loop import MissionOrchestrator, MissionStore
 
 
 class MissionOrchestratorTests(unittest.TestCase):
+    def test_host_agent_generation_is_durable_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MissionStore(Path(tmpdir) / ".multi-loop")
+            orchestrator = MissionOrchestrator(store=store)
+            mission = orchestrator.create_mission("Host executes this", "Produce evidence")
+
+            generation = orchestrator.prepare_generation(mission.id)
+            repeated = orchestrator.prepare_generation(mission.id)
+            self.assertEqual(repeated.index, generation.index)
+            self.assertEqual(len(store.load_mission(mission.id).generations), 1)
+
+            for index, planned in enumerate(generation.candidate_loops):
+                claim = orchestrator.claim_candidate(mission.id, generation.index, planned.id)
+                self.assertFalse(claim.blocked)
+                recorded = orchestrator.submit_candidate_result(
+                    mission.id,
+                    generation.index,
+                    planned.id,
+                    success=index != 1,
+                    summary=f"host result {index}",
+                    submission_id=f"submission-{index}",
+                    claim_token=claim.claim_token,
+                )
+                repeated_result = orchestrator.submit_candidate_result(
+                    mission.id,
+                    generation.index,
+                    planned.id,
+                    success=index != 1,
+                    summary=f"host result {index}",
+                    submission_id=f"submission-{index}",
+                    claim_token=claim.claim_token,
+                )
+                self.assertEqual(recorded.id, repeated_result.id)
+
+            result = orchestrator.finalize_generation(mission.id, generation.index)
+            loaded = store.load_mission(mission.id).generations[0]
+
+        self.assertEqual(loaded.state.value, "completed")
+        self.assertEqual(len(result.selected_loop_ids), 2)
+        self.assertIn("host result", result.synthesis)
+
+    def test_host_generation_cannot_finalize_unclaimed_work(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MissionStore(Path(tmpdir) / ".multi-loop")
+            orchestrator = MissionOrchestrator(store=store)
+            mission = orchestrator.create_mission("Host executes", "Done")
+            generation = orchestrator.prepare_generation(mission.id)
+
+            with self.assertRaisesRegex(ValueError, "unfinished candidates"):
+                orchestrator.finalize_generation(mission.id, generation.index)
+
+    def test_candidate_claim_token_prevents_duplicate_host_execution(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MissionStore(Path(tmpdir) / ".multi-loop")
+            orchestrator = MissionOrchestrator(store=store)
+            mission = orchestrator.create_mission("Host executes", "Done")
+            generation = orchestrator.prepare_generation(mission.id)
+            candidate = generation.candidate_loops[0]
+            claim = orchestrator.claim_candidate(
+                mission.id, generation.index, candidate.id, claimant_id="codex-a"
+            )
+
+            with self.assertRaisesRegex(ValueError, "already claimed"):
+                orchestrator.claim_candidate(
+                    mission.id, generation.index, candidate.id, claimant_id="codex-b"
+                )
+            resumed = orchestrator.claim_candidate(
+                mission.id,
+                generation.index,
+                candidate.id,
+                claimant_id="codex-a",
+                claim_token=claim.claim_token,
+            )
+
+        self.assertEqual(resumed.claim_token, claim.claim_token)
+
     def test_run_generation_persists_results_events_and_synthesis(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             store = MissionStore(Path(tmpdir) / ".multi-loop")
@@ -130,7 +206,7 @@ class MissionOrchestratorTests(unittest.TestCase):
         self.assertIn("SIDE EFFECTS: NONE PERMITTED", prompt)
         self.assertIn("Do NOT merge", prompt)
 
-    def test_allow_side_effects_lifts_the_directive(self):
+    def test_global_side_effect_flag_cannot_bypass_scoped_policy(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             store = MissionStore(Path(tmpdir) / ".multi-loop")
             orchestrator = MissionOrchestrator(store=store)
@@ -141,8 +217,7 @@ class MissionOrchestratorTests(unittest.TestCase):
             art = loaded.generations[0].candidate_loops[0].artifacts[0].path
             prompt = (store.mission_dir(mission.id) / art).read_text()
 
-        self.assertIn("SIDE EFFECTS: APPROVED", prompt)
-        self.assertNotIn("NONE PERMITTED", prompt)
+        self.assertIn("SIDE EFFECTS: NONE PERMITTED", prompt)
 
 
 if __name__ == "__main__":

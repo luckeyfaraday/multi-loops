@@ -14,6 +14,7 @@ from typing import Any
 
 from .capabilities import default_capabilities
 from .index import MissionIndex
+from .main_agent import MainLoopService
 from .mcp_runs import MANAGER, mcp_runs_dir
 from .models import to_dict
 from .onboarding import OnboardingEngine, format_capability_brief
@@ -41,6 +42,171 @@ def _mission_payload(store: MissionStore, mission_id: str) -> dict[str, Any]:
         "ledger_count": len(store.read_ledger(mission_id)),
         "event_count": len(store.read_events(mission_id)),
     }
+
+
+def main_loop_open_impl(
+    *,
+    root: str = DEFAULT_ROOT,
+    session_id: str | None = None,
+    mission_seed: str = "",
+    provider_id: str | None = None,
+    interface: str = "mcp",
+) -> dict[str, Any]:
+    """Open or resume the durable main-loop agent session."""
+    try:
+        return MainLoopService(root).open(
+            interface=interface,
+            provider_id=provider_id,
+            mission_seed=mission_seed,
+            session_id=session_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - MCP boundary returns structured failures
+        return _error(exc)
+
+
+def main_loop_context_impl(
+    session_id: str,
+    *,
+    root: str = DEFAULT_ROOT,
+    recent_limit: int = 30,
+) -> dict[str, Any]:
+    try:
+        return MainLoopService(root).context(session_id, recent_limit=recent_limit)
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def main_loop_list_impl(*, root: str = DEFAULT_ROOT) -> dict[str, Any]:
+    try:
+        return {"sessions": to_dict(MainLoopService(root).sessions.list())}
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def main_loop_pause_impl(
+    session_id: str,
+    *,
+    root: str = DEFAULT_ROOT,
+    expected_revision: int | None = None,
+) -> dict[str, Any]:
+    try:
+        return MainLoopService(root).pause(session_id, expected_revision=expected_revision)
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def main_loop_resume_impl(
+    session_id: str,
+    *,
+    root: str = DEFAULT_ROOT,
+    expected_revision: int | None = None,
+) -> dict[str, Any]:
+    try:
+        return MainLoopService(root).resume(session_id, expected_revision=expected_revision)
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def main_loop_record_turn_impl(
+    session_id: str,
+    user_message: str,
+    assistant_message: str,
+    *,
+    root: str = DEFAULT_ROOT,
+    expected_revision: int | None = None,
+) -> dict[str, Any]:
+    try:
+        return MainLoopService(root).record_turn(
+            session_id,
+            user_message=user_message,
+            assistant_message=assistant_message,
+            expected_revision=expected_revision,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def main_loop_checkpoint_impl(
+    session_id: str,
+    *,
+    root: str = DEFAULT_ROOT,
+    summary: str = "",
+    decisions: list[str] | None = None,
+    open_questions: list[str] | None = None,
+    expected_revision: int | None = None,
+) -> dict[str, Any]:
+    try:
+        return MainLoopService(root).checkpoint(
+            session_id,
+            summary=summary,
+            decisions=decisions,
+            open_questions=open_questions,
+            expected_revision=expected_revision,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def main_loop_compact_impl(
+    session_id: str,
+    summary: str,
+    *,
+    root: str = DEFAULT_ROOT,
+    expected_revision: int | None = None,
+) -> dict[str, Any]:
+    try:
+        return MainLoopService(root).compact(
+            session_id,
+            summary=summary,
+            expected_revision=expected_revision,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def mission_draft_update_impl(
+    session_id: str,
+    patch: dict[str, Any],
+    *,
+    root: str = DEFAULT_ROOT,
+    expected_revision: int | None = None,
+) -> dict[str, Any]:
+    try:
+        return MainLoopService(root).update_draft(
+            session_id,
+            patch,
+            expected_revision=expected_revision,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def mission_draft_validate_impl(
+    session_id: str,
+    *,
+    root: str = DEFAULT_ROOT,
+) -> dict[str, Any]:
+    try:
+        return MainLoopService(root).validate(session_id)
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def mission_confirm_impl(
+    session_id: str,
+    *,
+    root: str = DEFAULT_ROOT,
+    confirmed_by: str = "user",
+    expected_revision: int | None = None,
+) -> dict[str, Any]:
+    try:
+        return MainLoopService(root).confirm(
+            session_id,
+            confirmed_by=confirmed_by,
+            expected_revision=expected_revision,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
 
 
 def onboard_impl(
@@ -110,8 +276,8 @@ def create_mission_impl(
 def mission_status_impl(mission_id: str, *, root: str = DEFAULT_ROOT) -> dict[str, Any]:
     try:
         return _mission_payload(_store(root), mission_id)
-    except MissionNotFound as exc:
-        return {"error": str(exc), "mission_id": exc.mission_id}
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
 
 
 def list_missions_impl(*, root: str = DEFAULT_ROOT) -> dict[str, Any]:
@@ -145,8 +311,141 @@ def approve_capability_impl(
             approved_by=approved_by,
         )
         return {"mission_id": mission.id, "approvals": mission.approvals}
-    except MissionNotFound as exc:
-        return {"error": str(exc), "mission_id": exc.mission_id}
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def generation_prepare_impl(
+    mission_id: str,
+    *,
+    root: str = DEFAULT_ROOT,
+) -> dict[str, Any]:
+    """Plan work for execution by the MCP host agent without invoking another model."""
+    store = _store(root)
+    try:
+        generation = MissionOrchestrator(store=store).prepare_generation(mission_id)
+        return {
+            "mission_id": mission_id,
+            "generation": to_dict(generation),
+            "summary": f"generation {generation.index} is ready for host-agent execution",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def candidate_claim_impl(
+    mission_id: str,
+    generation_index: int,
+    candidate_id: str,
+    *,
+    root: str = DEFAULT_ROOT,
+    claimant_id: str = "mcp_host",
+    claim_token: str | None = None,
+) -> dict[str, Any]:
+    """Atomically claim and policy-check one host-agent candidate."""
+    try:
+        claim = MissionOrchestrator(store=_store(root)).claim_candidate(
+            mission_id,
+            generation_index,
+            candidate_id,
+            claimant_id=claimant_id,
+            claim_token=claim_token,
+        )
+        return {
+            "claim": to_dict(claim),
+            "summary": claim.block_reason or f"candidate {candidate_id} claimed",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def candidate_submit_result_impl(
+    mission_id: str,
+    generation_index: int,
+    candidate_id: str,
+    success: bool,
+    summary: str,
+    *,
+    root: str = DEFAULT_ROOT,
+    output: str = "",
+    artifacts: list[dict[str, Any]] | None = None,
+    metadata: dict[str, Any] | None = None,
+    submission_id: str | None = None,
+    claim_token: str | None = None,
+) -> dict[str, Any]:
+    """Submit structured evidence from work executed by the MCP host agent."""
+    try:
+        candidate = MissionOrchestrator(store=_store(root)).submit_candidate_result(
+            mission_id,
+            generation_index,
+            candidate_id,
+            success=success,
+            summary=summary,
+            output=output,
+            artifacts=artifacts,
+            metadata=metadata,
+            submission_id=submission_id,
+            claim_token=claim_token,
+        )
+        return {
+            "mission_id": mission_id,
+            "generation_index": generation_index,
+            "candidate": to_dict(candidate),
+            "summary": f"candidate {candidate_id} result recorded",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def candidate_artifact_write_impl(
+    mission_id: str,
+    generation_index: int,
+    candidate_id: str,
+    filename: str,
+    content: str,
+    *,
+    root: str = DEFAULT_ROOT,
+    kind: str = "text",
+    description: str = "Host-agent artifact",
+) -> dict[str, Any]:
+    """Write host evidence into a candidate-scoped path and return its reference."""
+    try:
+        artifact = MissionOrchestrator(store=_store(root)).write_candidate_artifact(
+            mission_id,
+            generation_index,
+            candidate_id,
+            filename=filename,
+            content=content,
+            kind=kind,
+            description=description,
+        )
+        return {"artifact": to_dict(artifact), "summary": f"artifact written: {artifact.path}"}
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def generation_finalize_impl(
+    mission_id: str,
+    generation_index: int,
+    *,
+    root: str = DEFAULT_ROOT,
+) -> dict[str, Any]:
+    """Finalize selection and synthesis after every candidate is terminal."""
+    store = _store(root)
+    try:
+        result = MissionOrchestrator(store=store).finalize_generation(
+            mission_id,
+            generation_index,
+        )
+        return {
+            "mission_id": mission_id,
+            "generation_index": generation_index,
+            "result": to_dict(result),
+            "mission": to_dict(store.load_mission(mission_id)),
+            "summary": f"generation {generation_index} finalized",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
 
 
 def run_generation_blocking_impl(
@@ -427,6 +726,152 @@ def build_server():
     mcp = FastMCP("multi-loop")
 
     @mcp.tool()
+    def main_loop_open(
+        root: str = DEFAULT_ROOT,
+        session_id: str | None = None,
+        mission_seed: str = "",
+        provider_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Open or resume the main-loop agent.
+
+        The MCP host agent conducts the conversation. Use the returned stable
+        system prompt and context, then persist durable decisions with
+        main_loop_checkpoint and mission_draft_update.
+        """
+        return main_loop_open_impl(
+            root=root,
+            session_id=session_id,
+            mission_seed=mission_seed,
+            provider_id=provider_id,
+            interface="mcp",
+        )
+
+    @mcp.tool()
+    def main_loop_context(
+        session_id: str,
+        root: str = DEFAULT_ROOT,
+        recent_limit: int = 30,
+    ) -> dict[str, Any]:
+        """Rebuild bounded durable context for an existing main-loop session."""
+        return main_loop_context_impl(session_id, root=root, recent_limit=recent_limit)
+
+    @mcp.tool()
+    def main_loop_list(root: str = DEFAULT_ROOT) -> dict[str, Any]:
+        """List durable main-loop sessions available for resumption."""
+        return main_loop_list_impl(root=root)
+
+    @mcp.tool()
+    def main_loop_pause(
+        session_id: str,
+        root: str = DEFAULT_ROOT,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Pause a main-loop conversation without deleting its state."""
+        return main_loop_pause_impl(
+            session_id, root=root, expected_revision=expected_revision
+        )
+
+    @mcp.tool()
+    def main_loop_resume(
+        session_id: str,
+        root: str = DEFAULT_ROOT,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Resume a paused main-loop conversation from durable state."""
+        return main_loop_resume_impl(
+            session_id, root=root, expected_revision=expected_revision
+        )
+
+    @mcp.tool()
+    def main_loop_record_turn(
+        session_id: str,
+        user_message: str,
+        assistant_message: str,
+        root: str = DEFAULT_ROOT,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Persist one completed host-agent conversation turn for later resume."""
+        return main_loop_record_turn_impl(
+            session_id,
+            user_message,
+            assistant_message,
+            root=root,
+            expected_revision=expected_revision,
+        )
+
+    @mcp.tool()
+    def main_loop_checkpoint(
+        session_id: str,
+        root: str = DEFAULT_ROOT,
+        summary: str = "",
+        decisions: list[str] | None = None,
+        open_questions: list[str] | None = None,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Persist a resumable summary and confirmed decisions; summaries are not authority."""
+        return main_loop_checkpoint_impl(
+            session_id,
+            root=root,
+            summary=summary,
+            decisions=decisions,
+            open_questions=open_questions,
+            expected_revision=expected_revision,
+        )
+
+    @mcp.tool()
+    def main_loop_compact(
+        session_id: str,
+        summary: str,
+        root: str = DEFAULT_ROOT,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Append a compaction checkpoint while retaining the full append-only transcript."""
+        return main_loop_compact_impl(
+            session_id,
+            summary,
+            root=root,
+            expected_revision=expected_revision,
+        )
+
+    @mcp.tool()
+    def mission_draft_update(
+        session_id: str,
+        patch: dict[str, Any],
+        root: str = DEFAULT_ROOT,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Update confirmed mission-draft fields; unknown fields and stale revisions fail."""
+        return mission_draft_update_impl(
+            session_id,
+            patch,
+            root=root,
+            expected_revision=expected_revision,
+        )
+
+    @mcp.tool()
+    def mission_draft_validate(
+        session_id: str,
+        root: str = DEFAULT_ROOT,
+    ) -> dict[str, Any]:
+        """Deterministically validate a mission draft before asking for confirmation."""
+        return mission_draft_validate_impl(session_id, root=root)
+
+    @mcp.tool()
+    def mission_confirm(
+        session_id: str,
+        root: str = DEFAULT_ROOT,
+        confirmed_by: str = "user",
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Create the mission only after the user explicitly confirms the valid draft."""
+        return mission_confirm_impl(
+            session_id,
+            root=root,
+            confirmed_by=confirmed_by,
+            expected_revision=expected_revision,
+        )
+
+    @mcp.tool()
     def onboard(
         mission: str = "",
         root: str = DEFAULT_ROOT,
@@ -454,6 +899,99 @@ def build_server():
         )
 
     @mcp.tool()
+    def generation_prepare(
+        mission_id: str,
+        root: str = DEFAULT_ROOT,
+    ) -> dict[str, Any]:
+        """Prepare a generation for this MCP host agent to execute.
+
+        This tool never invokes a nested LLM. Call candidate_claim for each
+        candidate, perform the work with your own tools, submit the evidence,
+        then call generation_finalize.
+        """
+        return generation_prepare_impl(mission_id, root=root)
+
+    @mcp.tool()
+    def candidate_claim(
+        mission_id: str,
+        generation_index: int,
+        candidate_id: str,
+        root: str = DEFAULT_ROOT,
+        claimant_id: str = "mcp_host",
+        claim_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Claim one candidate and receive its policy safety directive."""
+        return candidate_claim_impl(
+            mission_id,
+            generation_index,
+            candidate_id,
+            root=root,
+            claimant_id=claimant_id,
+            claim_token=claim_token,
+        )
+
+    @mcp.tool()
+    def candidate_submit_result(
+        mission_id: str,
+        generation_index: int,
+        candidate_id: str,
+        success: bool,
+        summary: str,
+        root: str = DEFAULT_ROOT,
+        output: str = "",
+        artifacts: list[dict[str, Any]] | None = None,
+        metadata: dict[str, Any] | None = None,
+        submission_id: str | None = None,
+        claim_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist the host agent's structured result and evidence for a claimed candidate."""
+        return candidate_submit_result_impl(
+            mission_id,
+            generation_index,
+            candidate_id,
+            success,
+            summary,
+            root=root,
+            output=output,
+            artifacts=artifacts,
+            metadata=metadata,
+            submission_id=submission_id,
+            claim_token=claim_token,
+        )
+
+    @mcp.tool()
+    def candidate_artifact_write(
+        mission_id: str,
+        generation_index: int,
+        candidate_id: str,
+        filename: str,
+        content: str,
+        root: str = DEFAULT_ROOT,
+        kind: str = "text",
+        description: str = "Host-agent artifact",
+    ) -> dict[str, Any]:
+        """Write candidate evidence to a safe mission path before submitting its result."""
+        return candidate_artifact_write_impl(
+            mission_id,
+            generation_index,
+            candidate_id,
+            filename,
+            content,
+            root=root,
+            kind=kind,
+            description=description,
+        )
+
+    @mcp.tool()
+    def generation_finalize(
+        mission_id: str,
+        generation_index: int,
+        root: str = DEFAULT_ROOT,
+    ) -> dict[str, Any]:
+        """Deterministically score, select, and synthesize a completed host-agent generation."""
+        return generation_finalize_impl(mission_id, generation_index, root=root)
+
+    @mcp.tool()
     def run_generation(
         mission_id: str,
         root: str = DEFAULT_ROOT,
@@ -468,9 +1006,9 @@ def build_server():
         """Run one mission generation; detached by default and monitorable by run_id.
 
         Pass runner_command (e.g. 'claude -p') to drive real agent/shell runners.
-        Side effects are denied by default; set allow_side_effects to permit
-        outward-facing agent actions. Pass verification commands to make success
-        reflect verified evidence rather than the runner's exit code.
+        Side effects require capability-scoped mission approval; the legacy
+        allow_side_effects flag cannot bypass that policy. Pass verification
+        commands to make success reflect evidence rather than runner exit code.
         """
         return run_generation_impl(
             mission_id,

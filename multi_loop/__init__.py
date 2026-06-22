@@ -9,8 +9,10 @@ from .models import (
     Capability,
     CapabilityRef,
     Event,
+    ExecutionProfile,
     FitnessScore,
     Generation,
+    GenerationState,
     LedgerEntry,
     Mission,
     MissionSchedule,
@@ -21,7 +23,7 @@ from .models import (
 )
 from .index import LedgerHit, MissionIndex
 from .leases import MissionBusy, MissionLease, acquire_mission_lease
-from .orchestrator import GenerationRunResult, MissionOrchestrator, ScheduleNotConfigured
+from .orchestrator import CandidateClaim, GenerationRunResult, MissionOrchestrator, ScheduleNotConfigured
 from .planning import FitnessReviewer, HeuristicPortfolioPlanner, PortfolioPlan
 from .policy import PathEscape, prepare_candidate, resolve_within, side_effect_directive
 from .scheduler import MissionScheduler, SchedulerTickReport, TickResult
@@ -45,19 +47,32 @@ from .runners import (
 from .schedule_util import compute_next_run, parse_schedule
 from .storage import MissionStore
 from .verification import VerificationReport, VerificationResult, run_verification
+from .agent_sessions import MainLoopSession, MainLoopSessionStore, MissionDraft, SessionEntry
+from .main_agent import MainLoopService
+from .agent_loop import AgentTurnResult, MainLoopAgent
+from .providers import (
+    OpenAICompatibleClient,
+    ProviderProfile,
+    ProviderReply,
+    ProviderStore,
+    ProviderToolCall,
+)
 
 __all__ = [
     "Artifact",
     "Budget",
     "CandidateLoop",
+    "CandidateClaim",
     "CandidateState",
     "Capability",
     "CapabilityRef",
     "CapabilityRegistry",
     "Event",
+    "ExecutionProfile",
     "FitnessScore",
     "FitnessReviewer",
     "Generation",
+    "GenerationState",
     "GenerationRunResult",
     "HeuristicPortfolioPlanner",
     "MissionScheduler",
@@ -71,6 +86,18 @@ __all__ = [
     "MissionOrchestrator",
     "MissionSchedule",
     "MissionStore",
+    "MissionDraft",
+    "MainLoopSession",
+    "MainLoopSessionStore",
+    "MainLoopService",
+    "MainLoopAgent",
+    "AgentTurnResult",
+    "SessionEntry",
+    "ProviderProfile",
+    "ProviderReply",
+    "ProviderStore",
+    "ProviderToolCall",
+    "OpenAICompatibleClient",
     "PathEscape",
     "ScheduleNotConfigured",
     "ScheduleState",

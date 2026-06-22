@@ -65,6 +65,26 @@ class HeuristicPortfolioPlanner:
             ),
         ]
         candidates.extend(_mission_specific_loops(mission))
+        for capability_name in mission.selected_capabilities:
+            if capability_name == "agent_loop" or any(
+                capability_name in _capability_names(candidate) for candidate in candidates
+            ):
+                continue
+            candidates.append(
+                _base_loop(
+                    mission,
+                    role=f"capability_{capability_name}",
+                    goal=(
+                        f"Use the selected {capability_name} capability to advance: "
+                        f"{mission.statement}"
+                    ),
+                    success_criteria=(
+                        "Return concrete evidence and artifacts aligned with the mission's "
+                        "success criteria."
+                    ),
+                    capabilities=[capability_name],
+                )
+            )
         return PortfolioPlan(candidates=_finalize_candidates(mission, candidates, self.capabilities))
 
     def _plan_evolved(self, mission: Mission, generation_index: int) -> PortfolioPlan:
