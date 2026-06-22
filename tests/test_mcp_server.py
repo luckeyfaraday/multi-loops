@@ -7,11 +7,17 @@ from pathlib import Path
 
 from multi_loop.mcp_server import (
     build_server,
+    candidate_artifact_write_impl,
+    candidate_claim_impl,
+    candidate_submit_result_impl,
     capability_describe_impl,
+    capability_add_command_impl,
     capability_list_impl,
     capability_search_impl,
     create_mission_impl,
     doctor_impl,
+    generation_finalize_impl,
+    generation_prepare_impl,
     list_backends_impl,
     list_missions_impl,
     mission_status_impl,
@@ -20,6 +26,13 @@ from multi_loop.mcp_server import (
     run_list_impl,
     run_result_impl,
     lineage_impl,
+    main_loop_checkpoint_impl,
+    main_loop_context_impl,
+    main_loop_open_impl,
+    main_loop_record_turn_impl,
+    mission_confirm_impl,
+    mission_draft_update_impl,
+    mission_draft_validate_impl,
     run_status_impl,
     run_tail_impl,
     search_impl,
@@ -29,6 +42,89 @@ from multi_loop.mcp_server import (
 
 
 class McpServerTests(unittest.TestCase):
+    def test_mcp_host_executes_generation_without_nested_model(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = str(Path(tmpdir) / ".multi-loop")
+            created = create_mission_impl("Host-driven mission", "Return verified work", root=root)
+            prepared = generation_prepare_impl(created["mission_id"], root=root)
+            generation = prepared["generation"]
+
+            for index, candidate in enumerate(generation["candidate_loops"]):
+                claim = candidate_claim_impl(
+                    created["mission_id"], generation["index"], candidate["id"], root=root
+                )
+                self.assertFalse(claim["claim"]["blocked"])
+                artifact = candidate_artifact_write_impl(
+                    created["mission_id"],
+                    generation["index"],
+                    candidate["id"],
+                    claim["claim"]["claim_token"],
+                    f"evidence-{index}.md",
+                    f"Evidence from Codex candidate {index}",
+                    root=root,
+                    kind="markdown",
+                )
+                submitted = candidate_submit_result_impl(
+                    created["mission_id"],
+                    generation["index"],
+                    candidate["id"],
+                    True,
+                    f"Codex completed candidate {index}",
+                    root=root,
+                    submission_id=f"codex-{index}",
+                    claim_token=claim["claim"]["claim_token"],
+                    artifacts=[artifact["artifact"]],
+                )
+                self.assertEqual(submitted["candidate"]["state"], "completed")
+
+            finalized = generation_finalize_impl(
+                created["mission_id"], generation["index"], root=root
+            )
+
+        self.assertNotIn("error", finalized)
+        self.assertEqual(finalized["mission"]["generations"][0]["state"], "completed")
+        json.dumps(finalized)
+
+    def test_mcp_host_can_drive_durable_main_loop_onboarding(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = str(Path(tmpdir) / ".multi-loop")
+            opened = main_loop_open_impl(root=root, mission_seed="Launch a useful service")
+            session_id = opened["session"]["id"]
+            revision = opened["session"]["revision"]
+            updated = mission_draft_update_impl(
+                session_id,
+                {
+                    "success_criteria": "Acquire five validated design partners.",
+                    "requested_capabilities": ["agent_loop", "shell_command"],
+                },
+                root=root,
+                expected_revision=revision,
+            )
+            checkpointed = main_loop_checkpoint_impl(
+                session_id,
+                root=root,
+                summary="Service launch scoped around design partners.",
+                decisions=["Validate before building"],
+                open_questions=[],
+            )
+            recorded = main_loop_record_turn_impl(
+                session_id,
+                "Proceed with this scope",
+                "I will show the draft before creating it.",
+                root=root,
+            )
+            validation = mission_draft_validate_impl(session_id, root=root)
+            confirmed = mission_confirm_impl(session_id, root=root)
+            resumed = main_loop_context_impl(session_id, root=root)
+
+        self.assertNotIn("error", updated)
+        self.assertNotIn("error", checkpointed)
+        self.assertNotIn("error", recorded)
+        self.assertTrue(validation["valid"])
+        self.assertTrue(confirmed["created"])
+        self.assertEqual(resumed["session"]["active_mission_id"], confirmed["mission"]["id"])
+        json.dumps(resumed)
+
     def test_create_run_and_status_impls_are_json_serializable(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = str(Path(tmpdir) / ".multi-loop")
@@ -127,6 +223,9 @@ class McpServerTests(unittest.TestCase):
         search = capability_search_impl("shell command local")
         described = capability_describe_impl("shell_command")
         unknown = capability_describe_impl("does_not_exist")
+        github = capability_search_impl(
+            "GitHub pull request review comments", include_unavailable=True
+        )
 
         self.assertEqual(listing["count"], len(listing["capabilities"]))
         self.assertLessEqual(available["count"], listing["count"])
@@ -134,7 +233,36 @@ class McpServerTests(unittest.TestCase):
         self.assertIn("shell_command", [card["name"] for card in search["results"]])
         self.assertTrue(described["available"])
         self.assertIn("error", unknown)
+        self.assertIn("github_pr_comment", [card["name"] for card in github["results"]])
         json.dumps({"listing": listing, "search": search, "described": described})
+
+    def test_mcp_onboarder_can_add_user_approved_command_capability(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = str(Path(tmpdir) / ".multi-loop")
+            opened = main_loop_open_impl(root=root, mission_seed="Use a command tool")
+            session_id = opened["session"]["id"]
+            mission_draft_update_impl(
+                session_id,
+                {"success_criteria": "Produce command evidence"},
+                root=root,
+            )
+
+            configured = capability_add_command_impl(
+                session_id,
+                "approved_command",
+                "A user-approved local command.",
+                "true",
+                "read_only",
+                "Yes, add this command.",
+                root=root,
+                runner="shell",
+            )
+            context = main_loop_context_impl(session_id, root=root)
+
+        self.assertNotIn("error", configured)
+        self.assertIn(
+            "approved_command", context["session"]["draft"]["requested_capabilities"]
+        )
 
     def test_toolset_impls(self):
         listing = toolset_list_impl()

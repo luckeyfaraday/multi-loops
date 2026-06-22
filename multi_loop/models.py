@@ -41,12 +41,35 @@ class CandidateState(str, Enum):
     DISCARDED = "discarded"
 
 
+class GenerationState(str, Enum):
+    """Lifecycle state for a durable generation, including agent-driven runs."""
+
+    PLANNED = "planned"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 @dataclass(slots=True)
 class Budget:
     max_iterations: int | None = None
     max_seconds: float | None = None
     max_cost_usd: float | None = None
     max_tokens: int | None = None
+
+
+@dataclass(slots=True)
+class ExecutionProfile:
+    """Structured execution settings captured by the main-loop agent."""
+
+    controller: str = "deterministic"  # deterministic | cli_agent | mcp_host
+    provider_id: str | None = None
+    model: str | None = None
+    runner: str = "mock"
+    runner_command: str | None = None
+    verification: list[str] = field(default_factory=list)
+    workspace: str | None = None
+    autonomy_level: str = "local_only"
 
 
 @dataclass(slots=True)
@@ -74,6 +97,9 @@ class Capability:
     # Environment variables that must be set for this capability to be usable.
     # The registry treats a capability with any missing variable as unavailable.
     requires_env: list[str] = field(default_factory=list)
+    runner: str | None = None
+    runner_command: str | None = None
+    setup_hint: str | None = None
 
 
 @dataclass(slots=True)
@@ -134,11 +160,16 @@ class CandidateLoop:
     result: str | None = None
     artifacts: list[Artifact] = field(default_factory=list)
     fitness: FitnessScore | None = None
+    submission_id: str | None = None
+    claim_token: str | None = None
+    claimed_by: str | None = None
+    claimed_at: str | None = None
 
 
 @dataclass(slots=True)
 class Generation:
     index: int
+    state: GenerationState = GenerationState.PLANNED
     candidate_loops: list[CandidateLoop] = field(default_factory=list)
     fitness_scores: list[FitnessScore] = field(default_factory=list)
     selected_lineage: list[str] = field(default_factory=list)
@@ -183,6 +214,9 @@ class Mission:
     clarifications: dict[str, str] = field(default_factory=dict)
     approvals: dict[str, str] = field(default_factory=dict)
     budget: Budget = field(default_factory=Budget)
+    execution_profile: ExecutionProfile = field(default_factory=ExecutionProfile)
+    selected_capabilities: list[str] = field(default_factory=list)
+    onboarding_session_id: str | None = None
     schedule: MissionSchedule | None = None
     generations: list[Generation] = field(default_factory=list)
     ledger: list[str] = field(default_factory=list)

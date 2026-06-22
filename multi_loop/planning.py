@@ -65,6 +65,26 @@ class HeuristicPortfolioPlanner:
             ),
         ]
         candidates.extend(_mission_specific_loops(mission))
+        for capability_name in mission.selected_capabilities:
+            if capability_name == "agent_loop" or any(
+                capability_name in _capability_names(candidate) for candidate in candidates
+            ):
+                continue
+            candidates.append(
+                _base_loop(
+                    mission,
+                    role=f"capability_{capability_name}",
+                    goal=(
+                        f"Use the selected {capability_name} capability to advance: "
+                        f"{mission.statement}"
+                    ),
+                    success_criteria=(
+                        "Return concrete evidence and artifacts aligned with the mission's "
+                        "success criteria."
+                    ),
+                    capabilities=[capability_name],
+                )
+            )
         return PortfolioPlan(candidates=_finalize_candidates(mission, candidates, self.capabilities))
 
     def _plan_evolved(self, mission: Mission, generation_index: int) -> PortfolioPlan:
@@ -186,8 +206,29 @@ def _finalize_candidates(
 ) -> list[CandidateLoop]:
     default_runner = preferred_runner(mission.clarifications)
     for candidate in candidates:
+        configured_card = next(
+            (
+                capabilities.get(ref.name)
+                for ref in candidate.required_capabilities
+                if capabilities.get(ref.name) is not None
+                and capabilities.require(ref.name).runner is not None
+            ),
+            None,
+        )
+        if configured_card is not None and configured_card.runner:
+            candidate.runner = configured_card.runner
+            if configured_card.runner_command:
+                candidate.runner_config["command"] = configured_card.runner_command
         if candidate.runner == "mock" and default_runner != "mock":
             candidate.runner = default_runner
+        if mission.execution_profile.runner in {"agent_command", "shell"}:
+            candidate.runner = mission.execution_profile.runner
+        if mission.execution_profile.runner_command:
+            candidate.runner_config["command"] = mission.execution_profile.runner_command
+        if mission.execution_profile.workspace:
+            candidate.runner_config["cwd"] = mission.execution_profile.workspace
+        if mission.execution_profile.verification:
+            candidate.verification = list(mission.execution_profile.verification)
         attach_policy_gates(candidate, mission, capabilities)
     return candidates
 

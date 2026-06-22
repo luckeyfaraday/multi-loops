@@ -10,6 +10,77 @@ from multi_loop.cli import main
 
 
 class CliTests(unittest.TestCase):
+    def test_provider_connect_and_list_store_only_env_reference(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = str(Path(tmpdir) / ".multi-loop")
+            connected_stdout = io.StringIO()
+            with contextlib.redirect_stdout(connected_stdout):
+                self.assertEqual(
+                    main(
+                        [
+                            "--root",
+                            root,
+                            "provider",
+                            "connect",
+                            "local",
+                            "--kind",
+                            "openai_compatible",
+                            "--model",
+                            "test-model",
+                            "--api-key-env",
+                            "TEST_LLM_KEY",
+                        ]
+                    ),
+                    0,
+                )
+            listed_stdout = io.StringIO()
+            with contextlib.redirect_stdout(listed_stdout):
+                self.assertEqual(main(["--root", root, "provider", "list"]), 0)
+            connected = json.loads(connected_stdout.getvalue())
+            listed = json.loads(listed_stdout.getvalue())
+
+        self.assertEqual(connected["provider"]["api_key_env"], "TEST_LLM_KEY")
+        self.assertEqual(listed["providers"][0]["id"], "local")
+
+    def test_agent_commands_create_update_and_confirm_mcp_session(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = str(Path(tmpdir) / ".multi-loop")
+            opened_stdout = io.StringIO()
+            with contextlib.redirect_stdout(opened_stdout):
+                self.assertEqual(
+                    main(["--root", root, "agent", "open", "--mission", "Build a product"]),
+                    0,
+                )
+            opened = json.loads(opened_stdout.getvalue())
+            session_id = opened["session"]["id"]
+
+            updated_stdout = io.StringIO()
+            with contextlib.redirect_stdout(updated_stdout):
+                self.assertEqual(
+                    main(
+                        [
+                            "--root",
+                            root,
+                            "agent",
+                            "draft",
+                            session_id,
+                            json.dumps({"success_criteria": "Ship a tested MVP"}),
+                        ]
+                    ),
+                    0,
+                )
+
+            confirmed_stdout = io.StringIO()
+            with contextlib.redirect_stdout(confirmed_stdout):
+                self.assertEqual(
+                    main(["--root", root, "agent", "confirm", session_id]),
+                    0,
+                )
+            confirmed = json.loads(confirmed_stdout.getvalue())
+
+        self.assertTrue(confirmed["created"])
+        self.assertEqual(confirmed["mission"]["onboarding_session_id"], session_id)
+
     def test_create_run_status_flow(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = str(Path(tmpdir) / ".multi-loop")

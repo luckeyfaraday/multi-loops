@@ -7,11 +7,14 @@ import json
 import sys
 from pathlib import Path
 
+from .agent_loop import MainLoopAgent
 from .capabilities import default_capabilities
 from .index import MissionIndex
+from .main_agent import MainLoopService
 from .models import to_dict
 from .onboarding import OnboardingEngine, collect_answers, format_capability_brief
 from .orchestrator import MissionOrchestrator, ScheduleNotConfigured
+from .providers import OpenAICompatibleClient, ProviderStore
 from .scheduler import MissionScheduler
 from .storage import MissionNotFound, MissionStore
 
@@ -43,6 +46,67 @@ def main(argv: list[str] | None = None) -> int:
         help="Only print the onboarding plan; do not create a mission",
     )
 
+    agent_parser = subparsers.add_parser("agent", help="Manage the durable main-loop agent")
+    agent_commands = agent_parser.add_subparsers(dest="agent_command", required=True)
+    agent_open = agent_commands.add_parser("open", help="Open a main-loop session")
+    agent_open.add_argument("--interface", choices=["cli", "mcp"], default="mcp")
+    agent_open.add_argument("--provider-id")
+    agent_open.add_argument("--mission", default="", help="Optional mission statement seed")
+    agent_open.add_argument("--session-id", help="Resume an existing session")
+    agent_context = agent_commands.add_parser("context", help="Show resumable agent context")
+    agent_context.add_argument("session_id")
+    agent_context.add_argument("--recent-limit", type=int, default=30)
+    agent_draft = agent_commands.add_parser("draft", help="Patch a mission draft with JSON")
+    agent_draft.add_argument("session_id")
+    agent_draft.add_argument("patch", help="JSON object containing confirmed draft fields")
+    agent_draft.add_argument("--revision", type=int)
+    agent_validate = agent_commands.add_parser("validate", help="Validate a mission draft")
+    agent_validate.add_argument("session_id")
+    agent_confirm = agent_commands.add_parser("confirm", help="Confirm and create the mission")
+    agent_confirm.add_argument("session_id")
+    agent_confirm.add_argument("--by", default="user")
+    agent_confirm.add_argument("--revision", type=int)
+    agent_checkpoint = agent_commands.add_parser("checkpoint", help="Persist resumable context")
+    agent_checkpoint.add_argument("session_id")
+    agent_checkpoint.add_argument("--summary", default="")
+    agent_checkpoint.add_argument("--decision", action="append", default=[])
+    agent_checkpoint.add_argument("--question", action="append", default=[])
+    agent_checkpoint.add_argument("--revision", type=int)
+    agent_commands.add_parser("list", help="List durable main-loop sessions")
+    agent_pause = agent_commands.add_parser("pause", help="Pause a main-loop session")
+    agent_pause.add_argument("session_id")
+    agent_pause.add_argument("--revision", type=int)
+    agent_resume = agent_commands.add_parser("resume", help="Resume a main-loop session")
+    agent_resume.add_argument("session_id")
+    agent_resume.add_argument("--revision", type=int)
+    agent_chat = agent_commands.add_parser("chat", help="Talk to the native main-loop agent")
+    agent_chat.add_argument("--provider-id", help="Connected provider profile")
+    agent_chat.add_argument("--session-id", help="Resume an existing session")
+    agent_chat.add_argument("--mission", default="", help="Optional mission statement seed")
+    agent_chat.add_argument("--message", help="Run one non-interactive user turn")
+    agent_chat.add_argument("--max-tool-iterations", type=int, default=12)
+
+    provider_parser = subparsers.add_parser("provider", help="Manage native LLM provider profiles")
+    provider_commands = provider_parser.add_subparsers(dest="provider_command", required=True)
+    provider_connect = provider_commands.add_parser("connect", help="Connect a provider profile")
+    provider_connect.add_argument("provider_id")
+    provider_connect.add_argument(
+        "--kind",
+        choices=["openai", "openrouter", "openai_compatible"],
+        default="openai",
+    )
+    provider_connect.add_argument("--model", required=True)
+    provider_connect.add_argument("--base-url")
+    provider_connect.add_argument(
+        "--api-key-env",
+        help="Environment variable containing the key; secret values are never stored",
+    )
+    provider_commands.add_parser("list", help="List provider profiles")
+    provider_validate = provider_commands.add_parser("validate", help="Validate provider connectivity")
+    provider_validate.add_argument("provider_id")
+    provider_remove = provider_commands.add_parser("disconnect", help="Remove a provider profile")
+    provider_remove.add_argument("provider_id")
+
     run_parser = subparsers.add_parser("run", help="Run one mission generation")
     run_parser.add_argument("mission_id", help="Mission ID")
     run_parser.add_argument(
@@ -57,8 +121,8 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument(
         "--allow-side-effects",
         action="store_true",
-        help="Permit outward-facing agent actions (merge/publish/spend). Default: deny "
-        "(spawned agents are told to stay read-only and local).",
+        help="Legacy compatibility flag. Outward actions still require a recorded "
+        "approval for the candidate's specific side-effecting capability.",
     )
     run_parser.add_argument(
         "--verify",
@@ -131,9 +195,33 @@ def main(argv: list[str] | None = None) -> int:
     except ScheduleNotConfigured as exc:
         print(f"Mission has no schedule: {exc.mission_id}", file=sys.stderr)
         return 1
+    except (ValueError, RuntimeError, FileNotFoundError, json.JSONDecodeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
 
 def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
+    if args.command == "provider":
+        providers = ProviderStore(args.root)
+        if args.provider_command == "connect":
+            profile = providers.connect(
+                args.provider_id,
+                kind=args.kind,
+                model=args.model,
+                base_url=args.base_url,
+                api_key_env=args.api_key_env,
+            )
+            _print_json({"connected": True, "provider": to_dict(profile)})
+        elif args.provider_command == "list":
+            _print_json({"providers": to_dict(providers.list())})
+        elif args.provider_command == "validate":
+            profile = providers.load(args.provider_id)
+            _print_json(OpenAICompatibleClient(profile).validate())
+        else:
+            providers.remove(args.provider_id)
+            _print_json({"disconnected": True, "provider_id": args.provider_id})
+        return 0
+
     if args.command == "create":
         orchestrator = MissionOrchestrator(store=store)
         mission = orchestrator.create_mission(
@@ -185,6 +273,53 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
                 "onboarding_plan": to_dict(plan),
             }
         )
+        return 0
+
+    if args.command == "agent":
+        service = MainLoopService(args.root)
+        if args.agent_command == "chat":
+            return _chat(args, service)
+        if args.agent_command == "list":
+            payload = {"sessions": to_dict(service.sessions.list())}
+        elif args.agent_command == "pause":
+            payload = service.pause(args.session_id, expected_revision=args.revision)
+        elif args.agent_command == "resume":
+            payload = service.resume(args.session_id, expected_revision=args.revision)
+        elif args.agent_command == "open":
+            payload = service.open(
+                interface=args.interface,
+                provider_id=args.provider_id,
+                mission_seed=args.mission,
+                session_id=args.session_id,
+            )
+        elif args.agent_command == "context":
+            payload = service.context(args.session_id, recent_limit=args.recent_limit)
+        elif args.agent_command == "draft":
+            patch = json.loads(args.patch)
+            if not isinstance(patch, dict):
+                raise ValueError("Mission draft patch must be a JSON object.")
+            payload = service.update_draft(
+                args.session_id,
+                patch,
+                expected_revision=args.revision,
+            )
+        elif args.agent_command == "validate":
+            payload = service.validate(args.session_id)
+        elif args.agent_command == "confirm":
+            payload = service.confirm(
+                args.session_id,
+                confirmed_by=args.by,
+                expected_revision=args.revision,
+            )
+        else:
+            payload = service.checkpoint(
+                args.session_id,
+                summary=args.summary,
+                decisions=args.decision,
+                open_questions=args.question,
+                expected_revision=args.revision,
+            )
+        _print_json(payload)
         return 0
 
     if args.command == "run":
@@ -324,3 +459,55 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
 
 def _print_json(data: dict) -> None:
     print(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def _chat(args: argparse.Namespace, service: MainLoopService) -> int:
+    providers = ProviderStore(args.root)
+    if args.session_id:
+        session = service.sessions.load(args.session_id)
+        provider_id = args.provider_id or session.provider_id
+        if args.provider_id and session.provider_id and args.provider_id != session.provider_id:
+            raise ValueError("A resumed session must use its connected provider profile.")
+        session_id = session.id
+    else:
+        profiles = providers.list()
+        provider_id = args.provider_id or (profiles[0].id if len(profiles) == 1 else None)
+        if not provider_id:
+            raise ValueError("Connect a provider first or pass --provider-id.")
+        opened = service.open(
+            interface="cli",
+            provider_id=provider_id,
+            mission_seed=args.mission,
+        )
+        session_id = opened["session"]["id"]
+    if not provider_id:
+        raise ValueError("The session has no provider; connect one and start a new CLI session.")
+    client = OpenAICompatibleClient(providers.load(provider_id))
+    agent = MainLoopAgent(
+        args.root,
+        client,
+        max_tool_iterations=args.max_tool_iterations,
+    )
+    if args.message is not None:
+        result = agent.turn(session_id, args.message)
+        _print_json(to_dict(result))
+        return 0
+
+    print(f"main-loop session: {session_id} (provider: {provider_id})")
+    print("Type /exit to leave; the session remains resumable.")
+    while True:
+        try:
+            message = input("you> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if message in {"/exit", "/quit"}:
+            return 0
+        if not message:
+            continue
+        try:
+            result = agent.turn(session_id, message)
+        except (RuntimeError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            continue
+        print(f"agent> {result.content}")

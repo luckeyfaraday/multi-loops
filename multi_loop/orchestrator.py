@@ -7,22 +7,29 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .capabilities import CapabilityRegistry, default_capabilities
+from .capabilities import CapabilityRegistry
+from .capability_config import configured_capabilities
 from .models import (
+    Artifact,
+    Budget,
     CandidateLoop,
     CandidateState,
     Event,
+    ExecutionProfile,
     FitnessScore,
     Generation,
+    GenerationState,
     LedgerEntry,
     Mission,
     MissionSchedule,
     ScheduleState,
+    from_dict,
+    new_id,
     utc_now_iso,
 )
 from .leases import acquire_mission_lease
 from .planning import FitnessReviewer, HeuristicPortfolioPlanner
-from .policy import prepare_candidate, side_effect_directive
+from .policy import APPROVAL_REQUIRED, prepare_candidate, resolve_within, side_effect_directive
 from .runners import RunRequest, RunResult, RunnerRegistry, default_runner_registry, run_result_to_dict
 from .schedule_util import compute_next_run, initialize_schedule
 from .storage import MissionNotFound, MissionStore
@@ -42,6 +49,19 @@ class GenerationRunResult:
     blocked_candidates: list[str] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class CandidateClaim:
+    """A policy-checked unit of work for an external host agent."""
+
+    mission_id: str
+    generation_index: int
+    candidate: CandidateLoop
+    safety_directive: str
+    claim_token: str
+    blocked: bool = False
+    block_reason: str | None = None
+
+
 class MissionOrchestrator:
     """Run bounded multi-loop mission generations."""
 
@@ -56,7 +76,7 @@ class MissionOrchestrator:
     ) -> None:
         self.store = store or MissionStore()
         self.runners = runners or default_runner_registry()
-        self.capabilities = capabilities or default_capabilities()
+        self.capabilities = capabilities or configured_capabilities(self.store.root)
         self.planner = planner or HeuristicPortfolioPlanner(self.capabilities)
         self.reviewer = reviewer or FitnessReviewer()
         self.workspace = Path(workspace).resolve() if workspace else None
@@ -69,6 +89,10 @@ class MissionOrchestrator:
         schedule: str | None = None,
         clarifications: dict[str, str] | None = None,
         approvals: dict[str, str] | None = None,
+        execution_profile: ExecutionProfile | None = None,
+        selected_capabilities: list[str] | None = None,
+        onboarding_session_id: str | None = None,
+        budget: Budget | None = None,
     ) -> Mission:
         mission_schedule = MissionSchedule(expression=schedule) if schedule else None
         if mission_schedule is not None:
@@ -79,6 +103,10 @@ class MissionOrchestrator:
             success_criteria=success_criteria,
             clarifications=clarifications or {},
             approvals=approvals or {},
+            execution_profile=execution_profile or ExecutionProfile(),
+            selected_capabilities=selected_capabilities or [],
+            onboarding_session_id=onboarding_session_id,
+            budget=budget or Budget(),
             schedule=mission_schedule,
         )
         self.store.create_mission(mission)
@@ -97,18 +125,27 @@ class MissionOrchestrator:
         return mission
 
     def approve_capability(self, mission_id: str, capability: str, *, approved_by: str) -> Mission:
+        card = self.capabilities.get(capability)
+        if card is None:
+            raise ValueError(f"Unknown capability: {capability}")
+        if card.side_effect_class not in APPROVAL_REQUIRED:
+            raise ValueError(
+                f"Capability {capability} does not require external-action approval."
+            )
+        if not approved_by.strip():
+            raise ValueError("Approver identity is required.")
         mission = self.store.load_mission(mission_id)
-        mission.approvals[capability] = approved_by
+        mission.approvals[capability] = approved_by.strip()
         self.store.save_mission(mission)
         self._append_event(
             mission,
             "capability_approved",
-            {"capability": capability, "approved_by": approved_by},
+            {"capability": capability, "approved_by": approved_by.strip()},
         )
         entry = LedgerEntry(
             mission_id=mission.id,
             event_type="capability_approved",
-            summary=f"Approved capability {capability} for {approved_by}",
+            summary=f"Approved capability {capability} for {approved_by.strip()}",
         )
         self._append_ledger(mission, entry)
         self.store.save_mission(mission)
@@ -183,10 +220,9 @@ class MissionOrchestrator:
         the command on stdin). When a command is given without an explicit
         ``runner_name``, the runner defaults to ``agent_command``.
 
-        ``allow_side_effects`` lifts the default deny posture: by default every
-        spawned agent is instructed to stay read-only and local, so a candidate
-        cannot take outward-facing actions (merge/publish/spend) without explicit
-        approval.
+        ``allow_side_effects`` is retained for CLI compatibility but does not
+        bypass policy. A candidate can take outward-facing actions only when its
+        required side-effecting capability has a recorded mission approval.
 
         Raises ``MissionBusy`` if another runner (CLI, MCP, scheduler) already
         holds the mission, so concurrent callers skip rather than producing a
@@ -205,6 +241,300 @@ class MissionOrchestrator:
                 verify_timeout_seconds=verify_timeout_seconds,
             )
 
+    def prepare_generation(self, mission_id: str) -> Generation:
+        """Plan a durable generation without executing its candidates.
+
+        This is the MCP/host-agent execution path. Repeated calls return the
+        current unfinished generation instead of creating duplicate work.
+        """
+        mission_dir = self.store.mission_dir(mission_id)
+        if not mission_dir.exists():
+            raise MissionNotFound(mission_id)
+        with acquire_mission_lease(mission_dir, mission_id):
+            mission = self.store.load_mission(mission_id)
+            if mission.generations:
+                current = mission.generations[-1]
+                _repair_legacy_generation_state(current)
+                if current.state in {GenerationState.PLANNED, GenerationState.RUNNING}:
+                    self.store.save_mission(mission)
+                    return current
+
+            generation_index = len(mission.generations)
+            portfolio = self.planner.plan(mission, generation_index)
+            generation = Generation(
+                index=generation_index,
+                state=GenerationState.PLANNED,
+                candidate_loops=portfolio.candidates,
+                mutations=portfolio.mutations,
+            )
+            mission.generations.append(generation)
+            self._append_event(
+                mission,
+                "generation_prepared",
+                {
+                    "candidate_count": len(generation.candidate_loops),
+                    "mutations": generation.mutations,
+                    "controller": mission.execution_profile.controller,
+                },
+                generation_index,
+            )
+            self.store.save_mission(mission)
+            return generation
+
+    def claim_candidate(
+        self,
+        mission_id: str,
+        generation_index: int,
+        candidate_id: str,
+        *,
+        claimant_id: str = "host_agent",
+        claim_token: str | None = None,
+    ) -> CandidateClaim:
+        """Policy-check and atomically claim a candidate for host execution."""
+        mission_dir = self.store.mission_dir(mission_id)
+        if not mission_dir.exists():
+            raise MissionNotFound(mission_id)
+        with acquire_mission_lease(mission_dir, mission_id):
+            mission = self.store.load_mission(mission_id)
+            generation = _require_generation(mission, generation_index)
+            _repair_legacy_generation_state(generation)
+            if generation.state == GenerationState.COMPLETED:
+                raise ValueError(f"Generation {generation_index} is already completed.")
+            candidate = _require_candidate(generation, candidate_id)
+            if candidate.state == CandidateState.RUNNING:
+                if not claim_token or claim_token != candidate.claim_token:
+                    raise ValueError(
+                        f"Candidate {candidate_id} is already claimed by {candidate.claimed_by or 'another host'}."
+                    )
+                return CandidateClaim(
+                    mission_id=mission_id,
+                    generation_index=generation_index,
+                    candidate=candidate,
+                    safety_directive=side_effect_directive(candidate, mission, self.capabilities),
+                    claim_token=candidate.claim_token,
+                )
+            if candidate.state != CandidateState.PLANNED:
+                raise ValueError(
+                    f"Candidate {candidate_id} cannot be claimed from state {candidate.state.value}."
+                )
+
+            blocked_reason = prepare_candidate(candidate, mission, self.capabilities)
+            if blocked_reason:
+                result = RunResult(
+                    candidate_loop_id=candidate.id,
+                    success=False,
+                    summary=blocked_reason,
+                    metadata={"blocked_by_policy": True},
+                )
+                self._record_candidate_result(
+                    mission,
+                    generation,
+                    candidate,
+                    result,
+                    blocked=True,
+                )
+                self.store.save_mission(mission)
+                return CandidateClaim(
+                    mission_id=mission_id,
+                    generation_index=generation_index,
+                    candidate=candidate,
+                    safety_directive=side_effect_directive(candidate, mission, self.capabilities),
+                    claim_token="",
+                    blocked=True,
+                    block_reason=blocked_reason,
+                )
+
+            candidate.state = CandidateState.RUNNING
+            candidate.claim_token = claim_token or new_id("claim")
+            candidate.claimed_by = claimant_id.strip() or "host_agent"
+            candidate.claimed_at = utc_now_iso()
+            generation.state = GenerationState.RUNNING
+            self._append_event(
+                mission,
+                "candidate_claimed",
+                {
+                    "goal": candidate.goal,
+                    "controller": mission.execution_profile.controller,
+                    "claimed_by": candidate.claimed_by,
+                },
+                generation_index,
+                candidate.id,
+            )
+            self.store.save_mission(mission)
+            return CandidateClaim(
+                mission_id=mission_id,
+                generation_index=generation_index,
+                candidate=candidate,
+                safety_directive=side_effect_directive(candidate, mission, self.capabilities),
+                claim_token=candidate.claim_token,
+            )
+
+    def submit_candidate_result(
+        self,
+        mission_id: str,
+        generation_index: int,
+        candidate_id: str,
+        *,
+        success: bool,
+        summary: str,
+        output: str = "",
+        artifacts: list[Artifact] | list[dict[str, object]] | None = None,
+        metadata: dict[str, object] | None = None,
+        submission_id: str | None = None,
+        claim_token: str | None = None,
+    ) -> CandidateLoop:
+        """Persist one host-executed result with optional idempotency key."""
+        if not summary.strip():
+            raise ValueError("Candidate result summary cannot be empty.")
+        mission_dir = self.store.mission_dir(mission_id)
+        if not mission_dir.exists():
+            raise MissionNotFound(mission_id)
+        with acquire_mission_lease(mission_dir, mission_id):
+            mission = self.store.load_mission(mission_id)
+            generation = _require_generation(mission, generation_index)
+            candidate = _require_candidate(generation, candidate_id)
+            if candidate.state in {
+                CandidateState.COMPLETED,
+                CandidateState.FAILED,
+                CandidateState.DISCARDED,
+            }:
+                if submission_id and candidate.submission_id == submission_id:
+                    return candidate
+                raise ValueError(f"Candidate {candidate_id} already has a terminal result.")
+            if candidate.state != CandidateState.RUNNING:
+                raise ValueError(f"Candidate {candidate_id} must be claimed before submission.")
+            if not claim_token or claim_token != candidate.claim_token:
+                raise ValueError(f"Candidate {candidate_id} result requires its active claim token.")
+
+            hydrated_artifacts: list[Artifact] = []
+            for item in artifacts or []:
+                artifact = item if isinstance(item, Artifact) else from_dict(Artifact, item)
+                # Validate containment even though the host, rather than this
+                # process, created the artifact.
+                artifact_path = resolve_within(mission_dir, artifact.path)
+                if not artifact_path.exists():
+                    raise ValueError(
+                        f"Submitted artifact does not exist in mission storage: {artifact.path}"
+                    )
+                hydrated_artifacts.append(artifact)
+
+            candidate.submission_id = submission_id
+            result = RunResult(
+                candidate_loop_id=candidate.id,
+                success=success,
+                summary=summary,
+                output=output,
+                artifacts=hydrated_artifacts,
+                metadata={**(metadata or {}), "submission_id": submission_id},
+            )
+            self._apply_verification(mission, candidate, result, None)
+            self._record_candidate_result(mission, generation, candidate, result)
+            self.store.save_mission(mission)
+            return candidate
+
+    def write_candidate_artifact(
+        self,
+        mission_id: str,
+        generation_index: int,
+        candidate_id: str,
+        *,
+        claim_token: str,
+        filename: str,
+        content: str,
+        kind: str = "text",
+        description: str = "Host-agent artifact",
+    ) -> Artifact:
+        """Safely write host-generated evidence into scoped mission storage."""
+        clean_name = filename.strip()
+        if (
+            not clean_name
+            or clean_name in {".", ".."}
+            or "/" in clean_name
+            or "\\" in clean_name
+            or Path(clean_name).name != clean_name
+        ):
+            raise ValueError("Artifact filename must be a single safe filename.")
+        mission_dir = self.store.mission_dir(mission_id)
+        if not mission_dir.exists():
+            raise MissionNotFound(mission_id)
+        with acquire_mission_lease(mission_dir, mission_id):
+            mission = self.store.load_mission(mission_id)
+            generation = _require_generation(mission, generation_index)
+            candidate = _require_candidate(generation, candidate_id)
+            if candidate.state != CandidateState.RUNNING:
+                raise ValueError("Candidate artifacts may be written only while the candidate is claimed.")
+            if not claim_token or claim_token != candidate.claim_token:
+                raise ValueError(f"Candidate {candidate_id} artifact requires its active claim token.")
+            relative_path = (
+                f"artifacts/generation-{generation_index}/{candidate_id}-host/{clean_name}"
+            )
+            self.store.write_artifact(mission_id, relative_path, content)
+            artifact = Artifact(path=relative_path, kind=kind, description=description)
+            self._append_event(
+                mission,
+                "candidate_artifact_written",
+                {"path": relative_path, "kind": kind},
+                generation_index,
+                candidate_id,
+            )
+            return artifact
+
+    def finalize_generation(
+        self,
+        mission_id: str,
+        generation_index: int,
+    ) -> GenerationRunResult:
+        """Deterministically select lineage and synthesize a finished generation."""
+        mission_dir = self.store.mission_dir(mission_id)
+        if not mission_dir.exists():
+            raise MissionNotFound(mission_id)
+        with acquire_mission_lease(mission_dir, mission_id):
+            mission = self.store.load_mission(mission_id)
+            generation = _require_generation(mission, generation_index)
+            _repair_legacy_generation_state(generation)
+            if generation.state == GenerationState.COMPLETED:
+                return _generation_result(mission, generation)
+            unfinished = [
+                candidate.id
+                for candidate in generation.candidate_loops
+                if candidate.state in {CandidateState.PLANNED, CandidateState.RUNNING}
+            ]
+            if unfinished:
+                raise ValueError(
+                    "Cannot finalize generation with unfinished candidates: " + ", ".join(unfinished)
+                )
+
+            generation.selected_lineage = _select_lineage(generation)
+            generation.synthesis = _synthesize_generation(mission, generation)
+            generation.state = GenerationState.COMPLETED
+            synthesis_path = f"artifacts/generation-{generation_index}/synthesis.md"
+            self.store.write_artifact(mission.id, synthesis_path, generation.synthesis)
+            self._append_ledger(
+                mission,
+                LedgerEntry(
+                    mission_id=mission.id,
+                    generation_index=generation_index,
+                    event_type="generation_synthesized",
+                    summary=(
+                        f"Generation {generation_index} synthesized with "
+                        f"{len(generation.selected_lineage)} selected candidate(s)."
+                    ),
+                ),
+            )
+            self._append_event(
+                mission,
+                "generation_finished",
+                {
+                    "selected_loop_ids": generation.selected_lineage,
+                    "synthesis_path": synthesis_path,
+                    "mutations": generation.mutations,
+                    "blocked_candidates": _blocked_candidate_ids(generation),
+                },
+                generation_index,
+            )
+            self.store.save_mission(mission)
+            return _generation_result(mission, generation, events_written=1, ledger_entries_written=1)
+
     def _run_generation_locked(
         self,
         mission_id: str,
@@ -216,6 +546,13 @@ class MissionOrchestrator:
         verify_timeout_seconds: float | None = None,
     ) -> GenerationRunResult:
         mission = self.store.load_mission(mission_id)
+        if mission.generations:
+            previous = mission.generations[-1]
+            _repair_legacy_generation_state(previous)
+            if previous.state in {GenerationState.PLANNED, GenerationState.RUNNING}:
+                raise ValueError(
+                    f"Generation {previous.index} is unfinished; resume or finalize it before starting another."
+                )
         generation_index = len(mission.generations)
         portfolio = self.planner.plan(mission, generation_index)
         candidates = portfolio.candidates
@@ -234,6 +571,7 @@ class MissionOrchestrator:
 
         generation = Generation(
             index=generation_index,
+            state=GenerationState.RUNNING,
             candidate_loops=candidates,
             mutations=portfolio.mutations,
         )
@@ -250,7 +588,8 @@ class MissionOrchestrator:
             {
                 "candidate_count": len(candidates),
                 "mutations": portfolio.mutations,
-                "side_effects": "allowed" if allow_side_effects else "denied",
+                "side_effects_requested": allow_side_effects,
+                "side_effect_policy": "capability_scoped",
             },
             generation_index,
         )
@@ -336,6 +675,7 @@ class MissionOrchestrator:
 
         generation.selected_lineage = _select_lineage(generation)
         generation.synthesis = _synthesize_generation(mission, generation)
+        generation.state = GenerationState.COMPLETED
         synthesis_path = f"artifacts/generation-{generation_index}/synthesis.md"
         self.store.write_artifact(mission.id, synthesis_path, generation.synthesis)
 
@@ -376,6 +716,71 @@ class MissionOrchestrator:
             blocked_candidates=blocked_candidates,
         )
 
+    def _record_candidate_result(
+        self,
+        mission: Mission,
+        generation: Generation,
+        candidate: CandidateLoop,
+        result: RunResult,
+        *,
+        blocked: bool = False,
+    ) -> str:
+        """Apply a runner or host result through one durable result path."""
+        candidate.state = (
+            CandidateState.DISCARDED
+            if blocked
+            else CandidateState.COMPLETED
+            if result.success
+            else CandidateState.FAILED
+        )
+        candidate.result = result.summary
+        candidate.artifacts = result.artifacts
+        candidate.fitness = self.reviewer.score(candidate, result)
+        generation.fitness_scores = [
+            score
+            for score in generation.fitness_scores
+            if score.candidate_loop_id != candidate.id
+        ]
+        generation.fitness_scores.append(candidate.fitness)
+        if generation.state == GenerationState.PLANNED:
+            generation.state = GenerationState.RUNNING
+
+        result_relative_path = f"results/generation-{generation.index}/{candidate.id}.json"
+        self.store.write_result(mission.id, result_relative_path, run_result_to_dict(result))
+        event_type = (
+            "candidate_discarded"
+            if blocked
+            else "candidate_completed"
+            if result.success
+            else "candidate_failed"
+        )
+        self._append_ledger(
+            mission,
+            LedgerEntry(
+                mission_id=mission.id,
+                generation_index=generation.index,
+                candidate_loop_id=candidate.id,
+                event_type=event_type,
+                summary=result.summary,
+                artifacts=result.artifacts,
+            ),
+        )
+        self._append_event(
+            mission,
+            "candidate_finished",
+            {
+                "success": result.success,
+                "summary": result.summary,
+                "fitness": candidate.fitness.score,
+                "artifacts": [artifact.path for artifact in result.artifacts],
+                "blocked": blocked,
+                "submission_id": candidate.submission_id,
+            },
+            generation.index,
+            candidate.id,
+        )
+        return result_relative_path
+
     def _run_candidate(
         self,
         mission: Mission,
@@ -405,7 +810,12 @@ class MissionOrchestrator:
     ) -> None:
         if not candidate.verification:
             return
-        cwd = self.workspace or self.store.mission_dir(mission.id)
+        configured_workspace = (
+            Path(mission.execution_profile.workspace).expanduser().resolve()
+            if mission.execution_profile.workspace
+            else None
+        )
+        cwd = self.workspace or configured_workspace or self.store.mission_dir(mission.id)
         report = run_verification(candidate.verification, cwd=cwd, timeout_seconds=verify_timeout_seconds)
         result.verification = report.results
         # Verification is authoritative when configured: it decides success
@@ -456,6 +866,59 @@ def _require_schedule(mission: Mission) -> MissionSchedule:
     if mission.schedule is None:
         raise ScheduleNotConfigured(mission.id)
     return mission.schedule
+
+
+def _require_generation(mission: Mission, generation_index: int) -> Generation:
+    for generation in mission.generations:
+        if generation.index == generation_index:
+            return generation
+    raise ValueError(f"Generation {generation_index} does not exist for mission {mission.id}.")
+
+
+def _require_candidate(generation: Generation, candidate_id: str) -> CandidateLoop:
+    for candidate in generation.candidate_loops:
+        if candidate.id == candidate_id:
+            return candidate
+    raise ValueError(f"Candidate {candidate_id} does not exist in generation {generation.index}.")
+
+
+def _repair_legacy_generation_state(generation: Generation) -> None:
+    """Infer completed state for mission files written before state existed."""
+    if generation.synthesis and generation.state != GenerationState.COMPLETED:
+        generation.state = GenerationState.COMPLETED
+
+
+def _blocked_candidate_ids(generation: Generation) -> list[str]:
+    return [
+        candidate.id
+        for candidate in generation.candidate_loops
+        if candidate.state == CandidateState.DISCARDED
+    ]
+
+
+def _generation_result(
+    mission: Mission,
+    generation: Generation,
+    *,
+    events_written: int = 0,
+    ledger_entries_written: int = 0,
+) -> GenerationRunResult:
+    return GenerationRunResult(
+        mission_id=mission.id,
+        generation_index=generation.index,
+        selected_loop_ids=list(generation.selected_lineage),
+        synthesis=generation.synthesis or "",
+        events_written=events_written,
+        ledger_entries_written=ledger_entries_written,
+        result_paths=[
+            f"results/generation-{generation.index}/{candidate.id}.json"
+            for candidate in generation.candidate_loops
+            if candidate.state
+            in {CandidateState.COMPLETED, CandidateState.FAILED, CandidateState.DISCARDED}
+        ],
+        mutations=list(generation.mutations),
+        blocked_candidates=_blocked_candidate_ids(generation),
+    )
 
 
 def _select_lineage(generation: Generation) -> list[str]:

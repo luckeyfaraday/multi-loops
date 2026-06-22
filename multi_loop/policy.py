@@ -146,10 +146,11 @@ def side_effect_directive(
     The default posture is deny: a candidate's runner is told to stay read-only
     and local regardless of what the spawned agent *could* do, so a nominally
     ``local_write`` candidate cannot quietly merge PRs or spend money. The
-    constraint is lifted only when side effects are explicitly approved — via
-    ``allow_side_effects`` or an approved side-effecting capability.
+    constraint is lifted only by an approval attached to a side-effecting
+    capability required by this candidate. ``allow_side_effects`` remains as a
+    backward-compatible input but deliberately cannot bypass scoped policy.
     """
-    if allow_side_effects or has_approved_side_effect(candidate, mission, capabilities):
+    if has_approved_side_effect(candidate, mission, capabilities):
         return _ALLOW_SIDE_EFFECTS
     return _DENY_SIDE_EFFECTS
 

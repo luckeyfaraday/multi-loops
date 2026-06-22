@@ -431,24 +431,50 @@ LedgerEntry
   created_at
 ```
 
-## Standalone Implementation
+## Conversational Main Loop
 
-`agentloop` is a separate project and should be treated only as inspiration.
-`multi-loop` should define its own runtime model, storage model, runner
-abstraction, and orchestration flow.
+Onboarding is now a durable agent protocol rather than a fixed questionnaire.
+The user may keep talking to the same main-loop session before and after mission
+creation. Confirmed intent is stored in a canonical `MissionDraft`; model-written
+summaries help rebuild context but never authorize operations or replace mission
+state.
 
-The likely implementation path is:
+There are two execution modes:
 
-1. Define mission, generation, experiment, candidate run, artifact, fitness, and
-   ledger data types.
-2. Add capability and policy-gate data types.
-3. Add a backend-neutral runner interface for agents, MCP calls, shell commands,
-   manual tasks, scheduled jobs, and mock runs.
-4. Persist candidate lineage and artifacts under a mission run directory.
-5. Add a fitness reviewer role that scores candidate outputs.
-6. Add selection, mutation, and crossover policies.
-7. Add user checkpoint/resume behavior for broad missions.
-8. Add scheduled mission ticks for recurring long-running work.
+- **CLI:** multi-loop calls a connected OpenAI-compatible provider and runs its
+  own bounded function-calling loop. Provider profiles store only an environment
+  variable name, never the credential value.
+- **MCP:** the host (Codex, Claude, or another MCP client) is the main-loop agent.
+  Multi-loop does not call a second LLM. It exposes deterministic session,
+  drafting, policy, and generation state transitions to the host.
+
+The session log is append-only and fsynced. Inbound user messages are persisted
+before a provider call, revisions prevent stale concurrent writes, context is
+bounded, and compaction retains the full transcript while saving a resumable
+working summary.
+
+### CLI agent flow
+
+Connect the provider first, using an environment variable for its key:
+
+```bash
+export OPENAI_API_KEY=...
+multi-loop provider connect work --kind openai --model <model-name>
+multi-loop provider validate work
+multi-loop agent chat --provider-id work --mission "Launch a useful service"
+```
+
+Use `--message "..."` for one non-interactive turn. The returned `session_id`
+can be resumed later:
+
+```bash
+multi-loop agent chat --session-id <session-id> --message "Continue where we stopped"
+```
+
+Custom or local OpenAI-compatible endpoints are supported with
+`--kind openai_compatible --base-url http://127.0.0.1:11434/v1`. Provider and
+session configuration live under `.multi-loop/main-loop/`; no Hermes, Pi, or
+other agent runtime is required.
 
 ## MVP Runtime
 
@@ -484,10 +510,10 @@ Real runs are governed by two safety rails:
 
 - **Side effects are denied by default.** Every spawned agent is instructed to stay
   read-only and local — no merging, publishing, sending, spending, or mutating remote
-  services. Pass `--allow-side-effects` (or approve a side-effecting capability) to
-  permit outward-facing actions, in which case the agent must return verifiable
-  handles for each. This stops a nominally `local_write` candidate from quietly taking
-  irreversible actions.
+  services. An outward action requires a recorded approval for the specific
+  side-effecting capability used by that candidate. The legacy
+  `--allow-side-effects` flag cannot bypass this scope. Approved actions must return
+  verifiable handles.
 - **Verification is authoritative.** Pass `--verify "<command>"` (repeatable) and the
   command's exit code — not the runner's — decides success. This rescues a candidate
   that did the work but whose runner was killed (e.g. timed out before reporting), and
@@ -495,8 +521,9 @@ Real runs are governed by two safety rails:
   evidence rather than the worker's self-report.
 
 ```bash
-# let agents act, and only count a candidate as successful if the PR is actually merged:
-python3 -m multi_loop run <mission-id> --runner-command "claude -p" --allow-side-effects \
+# after approving the candidate's specific GitHub write capability, verify the action:
+python3 -m multi_loop approve <mission-id> browser_automation --by user
+python3 -m multi_loop run <mission-id> --runner-command "claude -p" \
   --verify "gh pr view 42 --json state -q .state | grep -qx MERGED"
 ```
 
@@ -535,7 +562,8 @@ python3 -m multi_loop trigger <mission-id>   # mark due now
 python3 -m multi_loop tick                    # run all missions that are due
 ```
 
-The intended flow is onboarding first:
+The legacy deterministic `onboard` command remains available for scripts. The
+interactive path is the main-loop agent:
 
 1. The user states the mission.
 2. The orchestrator explains relevant configured capabilities and capabilities
@@ -547,7 +575,7 @@ The intended flow is onboarding first:
 5. The first generation runs as a dry/local pass unless the user approves broader
    tools or external side effects.
 
-Use this for a non-interactive dry setup:
+Use this for a legacy non-interactive dry setup:
 
 ```bash
 python3 -m multi_loop onboard --mission "Run a company" --defaults
@@ -589,6 +617,17 @@ multi-loop-mcp
 
 The server exposes the mission runtime directly:
 
+- `main_loop_open`, `main_loop_list`, `main_loop_context`, `main_loop_pause`,
+  `main_loop_resume`, `main_loop_record_turn`, `main_loop_checkpoint`, and
+  `main_loop_compact` provide durable host-agent sessions.
+- `mission_draft_update`, `mission_draft_validate`, and `mission_confirm` let the
+  host agent scope a mission conversationally and commit it only after explicit
+  user confirmation.
+- `generation_prepare`, `candidate_claim`, `candidate_artifact_write`,
+  `candidate_submit_result`, and `generation_finalize` are the host-execution
+  protocol. Codex can claim work, execute it with its own tools, store evidence,
+  submit an idempotent result, and let multi-loop deterministically select and
+  synthesize the generation. No nested model is invoked.
 - `onboard` builds an onboarding plan and can create the mission.
 - `create_mission`, `mission_status`, `list_missions`, and `approve_capability`
   manage persisted mission state.

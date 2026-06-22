@@ -80,12 +80,11 @@ class SideEffectDirectiveTests(unittest.TestCase):
         self.assertIn("NONE PERMITTED", directive)
         self.assertIn("Do NOT merge", directive)
 
-    def test_allows_when_explicitly_flagged(self):
+    def test_global_flag_does_not_bypass_capability_scope(self):
         registry = _registry_with_available(SideEffectClass.READ_ONLY)
         mission = Mission(statement="m", success_criteria="c")
         directive = side_effect_directive(_candidate(), mission, registry, allow_side_effects=True)
-        self.assertIn("APPROVED", directive)
-        self.assertIn("verifiable handle", directive)
+        self.assertIn("NONE PERMITTED", directive)
 
     def test_allows_with_approved_side_effecting_capability(self):
         registry = _registry_with_available(SideEffectClass.EXTERNAL_WRITE)
