@@ -40,6 +40,13 @@ class RuleBasedClassifierTests(unittest.TestCase):
         self.assertIsNone(outcome.failure_class)
         self.assertEqual(outcome.remedy_hint, "")
 
+    def test_successful_looking_thin_result_is_bad_output(self):
+        outcome = self._classify(
+            RunResult(candidate_loop_id="c", success=True, summary="ok")
+        )
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.failure_class, FailureClass.BAD_OUTPUT)
+
     def test_policy_block_is_classified_separately_from_unavailable_tool(self):
         blocked = self._classify(
             _failure(summary="Policy gate blocked candidate: paid_ads requires approval", blocked_by_policy=True)
@@ -188,6 +195,28 @@ class CauseAwareEvolutionTests(unittest.TestCase):
 
         # The second generation's runs carried pitfall lessons from the first.
         self.assertTrue(any(pitfalls for pitfalls in runner.seen_pitfalls))
+
+    def test_unavailable_tool_spawns_manual_setup_task(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MissionStore(Path(tmpdir) / ".multi-loop")
+            orchestrator = MissionOrchestrator(store=store)
+            mission = orchestrator.create_mission("Research a startup market", "Produce a plan")
+
+            orchestrator.run_generation(mission.id)
+            first = store.load_mission(mission.id).generations[0]
+            unavailable = [
+                candidate
+                for candidate in first.candidate_loops
+                if candidate.outcome
+                and candidate.outcome.failure_class is FailureClass.TOOL_UNAVAILABLE
+            ]
+            self.assertTrue(unavailable)
+
+            orchestrator.run_generation(mission.id)
+            second = store.load_mission(mission.id).generations[1]
+
+        self.assertTrue(any(candidate.role.endswith("_tool_setup") for candidate in second.candidate_loops))
+        self.assertTrue(any(mutation.startswith("tool_setup:") for mutation in second.mutations))
 
 
 if __name__ == "__main__":

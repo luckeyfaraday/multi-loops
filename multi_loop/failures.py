@@ -70,7 +70,10 @@ class RuleBasedClassifier:
     """Deterministic classifier driven by signals already on the run result."""
 
     def classify(self, candidate: CandidateLoop, result: RunResult) -> Outcome:
-        if result.success:
+        # A clean exit/self-report is not enough when the returned summary is too
+        # thin to be useful. Treat that as bad output so the orchestrator can
+        # retry it instead of recording a false-positive success.
+        if result.success and len((result.summary or "").strip()) >= _MIN_USEFUL_SUMMARY:
             return Outcome(
                 candidate_loop_id=candidate.id,
                 success=True,

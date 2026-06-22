@@ -632,14 +632,15 @@ class MissionOrchestrator:
                         metadata={"error": type(exc).__name__},
                     )
 
+            candidate.result = result.summary
+            candidate.artifacts = result.artifacts
+            candidate.outcome = self.classifier.classify(candidate, result)
+            result.success = candidate.outcome.success
             if blocked_reason:
                 candidate.state = CandidateState.DISCARDED
             else:
                 candidate.state = CandidateState.COMPLETED if result.success else CandidateState.FAILED
-            candidate.result = result.summary
-            candidate.artifacts = result.artifacts
             candidate.fitness = self.reviewer.score(candidate, result)
-            candidate.outcome = self.classifier.classify(candidate, result)
             generation.fitness_scores.append(candidate.fitness)
 
             result_relative_path = f"results/generation-{generation_index}/{candidate.id}.json"
@@ -732,6 +733,8 @@ class MissionOrchestrator:
         blocked: bool = False,
     ) -> str:
         """Apply a runner or host result through one durable result path."""
+        candidate.outcome = self.classifier.classify(candidate, result)
+        result.success = candidate.outcome.success
         candidate.state = (
             CandidateState.DISCARDED
             if blocked
@@ -742,7 +745,6 @@ class MissionOrchestrator:
         candidate.result = result.summary
         candidate.artifacts = result.artifacts
         candidate.fitness = self.reviewer.score(candidate, result)
-        candidate.outcome = self.classifier.classify(candidate, result)
         generation.fitness_scores = [
             score
             for score in generation.fitness_scores

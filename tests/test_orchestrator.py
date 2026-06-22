@@ -25,7 +25,7 @@ class MissionOrchestratorTests(unittest.TestCase):
                     generation.index,
                     planned.id,
                     success=index != 1,
-                    summary=f"host result {index}",
+                    summary=f"host candidate result number {index}",
                     submission_id=f"submission-{index}",
                     claim_token=claim.claim_token,
                 )
@@ -34,7 +34,7 @@ class MissionOrchestratorTests(unittest.TestCase):
                     generation.index,
                     planned.id,
                     success=index != 1,
-                    summary=f"host result {index}",
+                    summary=f"host candidate result number {index}",
                     submission_id=f"submission-{index}",
                     claim_token=claim.claim_token,
                 )
@@ -45,7 +45,7 @@ class MissionOrchestratorTests(unittest.TestCase):
 
         self.assertEqual(loaded.state.value, "completed")
         self.assertEqual(len(result.selected_loop_ids), 2)
-        self.assertIn("host result", result.synthesis)
+        self.assertIn("host candidate result", result.synthesis)
 
     def test_host_generation_cannot_finalize_unclaimed_work(self):
         with tempfile.TemporaryDirectory() as tmpdir:

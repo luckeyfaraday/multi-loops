@@ -108,6 +108,14 @@ class HeuristicPortfolioPlanner:
             for candidate in previous.candidate_loops
             if candidate.state == CandidateState.FAILED
         ]
+        unavailable = [
+            candidate
+            for candidate in previous.candidate_loops
+            if candidate.state == CandidateState.DISCARDED
+            and candidate.outcome is not None
+            and candidate.outcome.failure_class is FailureClass.TOOL_UNAVAILABLE
+            and candidate_blocked_now(candidate, mission, self.capabilities)
+        ]
         # Candidates discarded because a policy gate blocked them are not retried
         # blindly (that would loop forever while approval is withheld). But once
         # their capability has since been approved, resume the work.
@@ -136,7 +144,7 @@ class HeuristicPortfolioPlanner:
             candidates.append(child)
             mutations.append(f"narrow_scope:{winner.id}->{child.id}")
 
-        for failed in failures:
+        for failed in [*failures, *unavailable]:
             child, mutation = _retry_for_failure(mission, failed)
             candidates.append(child)
             mutations.append(mutation)

@@ -53,9 +53,12 @@ class EvolutionTests(unittest.TestCase):
         self.assertNotIn(campaign.id, result.blocked_candidates)
 
     def test_blocked_candidate_is_discarded_and_not_retried(self):
+        capabilities = default_capabilities()
+        capabilities.register(capabilities.require("paid_ads"), check=lambda: True, override=True)
+
         with tempfile.TemporaryDirectory() as tmpdir:
             store = MissionStore(Path(tmpdir) / ".multi-loop")
-            orchestrator = MissionOrchestrator(store=store)
+            orchestrator = MissionOrchestrator(store=store, capabilities=capabilities)
             mission = orchestrator.create_mission(
                 "Run ad campaign experiments",
                 "Produce campaign variants",
