@@ -58,6 +58,7 @@ class McpServerTests(unittest.TestCase):
                     created["mission_id"],
                     generation["index"],
                     candidate["id"],
+                    claim["claim"]["claim_token"],
                     f"evidence-{index}.md",
                     f"Evidence from Codex candidate {index}",
                     root=root,

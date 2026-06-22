@@ -1,7 +1,9 @@
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from multi_loop.agent_sessions import (
     AgentInterface,
@@ -168,6 +170,61 @@ class MainLoopServiceTests(unittest.TestCase):
         )
         self.assertEqual(confirmed["mission"]["execution_profile"]["controller"], "mcp_host")
         self.assertEqual(confirmed["mission"]["budget"]["max_iterations"], 4)
+
+    def test_concurrent_confirmation_creates_exactly_one_mission(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = MainLoopService(Path(tmpdir) / ".multi-loop")
+            session_id = service.open(interface="mcp", mission_seed="Create once")[
+                "session"
+            ]["id"]
+            service.update_draft(session_id, {"success_criteria": "One mission exists"})
+            barrier = threading.Barrier(2)
+            original_validate = service.validate
+
+            def synchronized_validate(value):
+                result = original_validate(value)
+                barrier.wait(timeout=2)
+                return result
+
+            outcomes = []
+
+            def confirm():
+                try:
+                    outcomes.append(service.confirm(session_id)["created"])
+                except Exception as exc:  # pragma: no cover - asserted below
+                    outcomes.append(type(exc).__name__)
+
+            with mock.patch.object(service, "validate", side_effect=synchronized_validate):
+                threads = [threading.Thread(target=confirm) for _ in range(2)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=5)
+
+            missions = service.missions.list_missions()
+
+        self.assertCountEqual(outcomes, [True, False])
+        self.assertEqual(len(missions), 1)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+
+    def test_cost_budget_is_rejected_until_provider_pricing_is_supported(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = MainLoopService(Path(tmpdir) / ".multi-loop")
+            session_id = service.open(
+                interface="cli", provider_id="local", mission_seed="Bound spending"
+            )["session"]["id"]
+            service.update_draft(
+                session_id,
+                {
+                    "success_criteria": "Stay within budget",
+                    "budget": {"max_cost_usd": 0.01},
+                },
+            )
+
+            validation = service.validate(session_id)
+
+        self.assertFalse(validation["valid"])
+        self.assertIn("not supported", " ".join(validation["errors"]))
 
     def test_cli_session_requires_connected_provider_reference(self):
         with tempfile.TemporaryDirectory() as tmpdir:

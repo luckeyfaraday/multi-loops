@@ -77,6 +77,19 @@ class MainLoopAgentTests(unittest.TestCase):
 
         self.assertTrue(any(entry.entry_type == "loop_stopped" for entry in entries))
 
+    def test_cost_budget_stops_before_calling_unpriced_provider(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / ".multi-loop"
+            service = MainLoopService(root)
+            session_id = service.open(interface="cli", provider_id="local")["session"]["id"]
+            service.update_draft(session_id, {"budget": {"max_cost_usd": 0.01}})
+            client = FakeProvider([ProviderReply(content="must not be called")])
+
+            with self.assertRaisesRegex(RuntimeError, "pricing"):
+                MainLoopAgent(root, client).turn(session_id, "continue")
+
+        self.assertEqual(client.calls, [])
+
     def test_model_cannot_confirm_before_post_draft_user_approval(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / ".multi-loop"

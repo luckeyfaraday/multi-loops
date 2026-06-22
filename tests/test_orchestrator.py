@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from multi_loop import MissionOrchestrator, MissionStore
+from multi_loop import ExecutionProfile, MissionOrchestrator, MissionStore
 
 
 class MissionOrchestratorTests(unittest.TestCase):
@@ -81,6 +81,63 @@ class MissionOrchestratorTests(unittest.TestCase):
             )
 
         self.assertEqual(resumed.claim_token, claim.claim_token)
+
+    def test_host_result_runs_configured_verification(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MissionStore(Path(tmpdir) / ".multi-loop")
+            orchestrator = MissionOrchestrator(store=store)
+            mission = orchestrator.create_mission(
+                "Host executes",
+                "Verification decides success",
+                execution_profile=ExecutionProfile(verification=["false"]),
+            )
+            generation = orchestrator.prepare_generation(mission.id)
+            candidate = generation.candidate_loops[0]
+            claim = orchestrator.claim_candidate(mission.id, generation.index, candidate.id)
+
+            recorded = orchestrator.submit_candidate_result(
+                mission.id,
+                generation.index,
+                candidate.id,
+                success=True,
+                summary="host reports success",
+                claim_token=claim.claim_token,
+            )
+
+        self.assertEqual(recorded.state.value, "failed")
+        self.assertEqual(len(recorded.fitness.rubric), 5)
+        self.assertEqual(recorded.fitness.rubric["verification"], 0.0)
+        self.assertIn("Verification failed", recorded.result)
+
+    def test_candidate_artifact_requires_active_claim_token(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MissionStore(Path(tmpdir) / ".multi-loop")
+            orchestrator = MissionOrchestrator(store=store)
+            mission = orchestrator.create_mission("Host executes", "Produce evidence")
+            generation = orchestrator.prepare_generation(mission.id)
+            candidate = generation.candidate_loops[0]
+            claim = orchestrator.claim_candidate(mission.id, generation.index, candidate.id)
+
+            with self.assertRaisesRegex(ValueError, "active claim token"):
+                orchestrator.write_candidate_artifact(
+                    mission.id,
+                    generation.index,
+                    candidate.id,
+                    claim_token="wrong-token",
+                    filename="evidence.md",
+                    content="untrusted evidence",
+                )
+            artifact = orchestrator.write_candidate_artifact(
+                mission.id,
+                generation.index,
+                candidate.id,
+                claim_token=claim.claim_token,
+                filename="evidence.md",
+                content="trusted evidence",
+            )
+            artifact_exists = (store.mission_dir(mission.id) / artifact.path).exists()
+
+        self.assertTrue(artifact_exists)
 
     def test_run_generation_persists_results_events_and_synthesis(self):
         with tempfile.TemporaryDirectory() as tmpdir:

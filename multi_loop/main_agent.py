@@ -20,6 +20,7 @@ from .models import (
     Event,
     ExecutionProfile,
     LedgerEntry,
+    Mission,
     SideEffectClass,
     to_dict,
     utc_now_iso,
@@ -67,6 +68,12 @@ _DRAFT_FIELDS = frozenset(
         "verification",
     }
 )
+
+
+class _MissionAlreadyConfirmed(RuntimeError):
+    def __init__(self, mission_id: str) -> None:
+        super().__init__(mission_id)
+        self.mission_id = mission_id
 
 
 class MainLoopService:
@@ -244,7 +251,9 @@ class MainLoopService:
         return self.context(session_id)
 
     def validate(self, session_id: str) -> dict[str, Any]:
-        session = self.sessions.load(session_id)
+        return self._validation_for_session(self.sessions.load(session_id))
+
+    def _validation_for_session(self, session: MainLoopSession) -> dict[str, Any]:
         errors = self._validate_draft(session)
         warnings: list[str] = []
         unavailable: list[str] = []
@@ -490,18 +499,61 @@ class MainLoopService:
         confirmed_by: str = "user",
         expected_revision: int | None = None,
     ) -> dict[str, Any]:
-        session = self.sessions.load(session_id)
-        if expected_revision is not None and session.revision != expected_revision:
-            from .agent_sessions import SessionConflict
+        mission: Mission | None = None
 
-            raise SessionConflict(session_id, expected_revision, session.revision)
-        validation = self.validate(session_id)
-        if not validation["valid"]:
-            raise ValueError("Mission draft is not valid: " + "; ".join(validation["errors"]))
-        if session.active_mission_id:
-            mission = self.missions.load_mission(session.active_mission_id)
-            return {"created": False, "mission": to_dict(mission), "context": self.context(session_id)}
+        def mutate(current: MainLoopSession) -> None:
+            nonlocal mission
+            if current.active_mission_id:
+                raise _MissionAlreadyConfirmed(current.active_mission_id)
+            validation = self._validation_for_session(current)
+            if not validation["valid"]:
+                raise ValueError(
+                    "Mission draft is not valid: " + "; ".join(validation["errors"])
+                )
 
+            # Mission creation occurs while the session revision lock is held. If
+            # a prior attempt created the mission but crashed before updating the
+            # session snapshot, recover that mission instead of creating another.
+            mission = next(
+                (
+                    item
+                    for item in self.missions.list_missions()
+                    if item.onboarding_session_id == current.id
+                ),
+                None,
+            )
+            if mission is None:
+                mission = self._create_mission_from_session(current, confirmed_by)
+            current.active_mission_id = mission.id
+            current.phase = AgentPhase.ACTIVE
+            current.draft.confirmed_at = utc_now_iso()
+
+        try:
+            self.sessions.mutate(
+                session_id,
+                mutate,
+                expected_revision=expected_revision,
+                entry_type="mission_confirmed",
+                data=lambda _session: {
+                    "mission_id": mission.id if mission is not None else "",
+                    "confirmed_by": confirmed_by,
+                },
+            )
+        except _MissionAlreadyConfirmed as exc:
+            existing = self.missions.load_mission(exc.mission_id)
+            return {
+                "created": False,
+                "mission": to_dict(existing),
+                "context": self.context(session_id),
+            }
+        assert mission is not None
+        return {"created": True, "mission": to_dict(mission), "context": self.context(session_id)}
+
+    def _create_mission_from_session(
+        self,
+        session: MainLoopSession,
+        confirmed_by: str,
+    ) -> Mission:
         controller = "mcp_host" if session.interface == AgentInterface.MCP else "cli_agent"
         provider_model = None
         if session.interface == AgentInterface.CLI and session.provider_id:
@@ -534,7 +586,9 @@ class MainLoopService:
                 "confirmed_by": confirmed_by,
             }
         )
-        mission = MissionOrchestrator(store=self.missions, capabilities=self.capabilities).create_mission(
+        return MissionOrchestrator(
+            store=self.missions, capabilities=self.capabilities
+        ).create_mission(
             session.draft.statement.strip(),
             session.draft.success_criteria.strip(),
             schedule=session.draft.schedule,
@@ -545,20 +599,6 @@ class MainLoopService:
             budget=session.draft.budget,
             approvals=dict(session.draft.capability_approvals),
         )
-
-        def mutate(current: MainLoopSession) -> None:
-            current.active_mission_id = mission.id
-            current.phase = AgentPhase.ACTIVE
-            current.draft.confirmed_at = utc_now_iso()
-
-        self.sessions.mutate(
-            session_id,
-            mutate,
-            expected_revision=session.revision,
-            entry_type="mission_confirmed",
-            data={"mission_id": mission.id, "confirmed_by": confirmed_by},
-        )
-        return {"created": True, "mission": to_dict(mission), "context": self.context(session_id)}
 
     def pause(self, session_id: str, *, expected_revision: int | None = None) -> dict[str, Any]:
         self.sessions.mutate(
@@ -621,6 +661,11 @@ class MainLoopService:
             value = getattr(draft.budget, field_name)
             if value is not None and value <= 0:
                 errors.append(f"budget.{field_name} must be positive")
+        if draft.budget.max_cost_usd is not None:
+            errors.append(
+                "budget.max_cost_usd is not supported without provider pricing; "
+                "use max_tokens instead"
+            )
         return errors
 
     def _normalize_patch(self, patch: dict[str, Any]) -> dict[str, Any]:

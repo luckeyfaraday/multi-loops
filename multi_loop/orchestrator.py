@@ -427,6 +427,7 @@ class MissionOrchestrator:
                 artifacts=hydrated_artifacts,
                 metadata={**(metadata or {}), "submission_id": submission_id},
             )
+            self._apply_verification(mission, candidate, result, None)
             self._record_candidate_result(mission, generation, candidate, result)
             self.store.save_mission(mission)
             return candidate
@@ -437,6 +438,7 @@ class MissionOrchestrator:
         generation_index: int,
         candidate_id: str,
         *,
+        claim_token: str,
         filename: str,
         content: str,
         kind: str = "text",
@@ -461,6 +463,8 @@ class MissionOrchestrator:
             candidate = _require_candidate(generation, candidate_id)
             if candidate.state != CandidateState.RUNNING:
                 raise ValueError("Candidate artifacts may be written only while the candidate is claimed.")
+            if not claim_token or claim_token != candidate.claim_token:
+                raise ValueError(f"Candidate {candidate_id} artifact requires its active claim token.")
             relative_path = (
                 f"artifacts/generation-{generation_index}/{candidate_id}-host/{clean_name}"
             )
@@ -806,7 +810,12 @@ class MissionOrchestrator:
     ) -> None:
         if not candidate.verification:
             return
-        cwd = self.workspace or self.store.mission_dir(mission.id)
+        configured_workspace = (
+            Path(mission.execution_profile.workspace).expanduser().resolve()
+            if mission.execution_profile.workspace
+            else None
+        )
+        cwd = self.workspace or configured_workspace or self.store.mission_dir(mission.id)
         report = run_verification(candidate.verification, cwd=cwd, timeout_seconds=verify_timeout_seconds)
         result.verification = report.results
         # Verification is authoritative when configured: it decides success

@@ -56,6 +56,13 @@ class MainLoopAgent:
         self.service.sessions.append_message(session_id, "user", user_message.strip())
         session = self.service.sessions.load(session_id)
         budget = session.draft.budget
+        if budget.max_cost_usd is not None:
+            message = (
+                "Session cost budgets require provider pricing, which is not configured; "
+                "use a token budget instead."
+            )
+            self.service.sessions.append_entry(session_id, "loop_stopped", {"reason": message})
+            raise RuntimeError(message)
         iteration_limit = self.max_tool_iterations
         if budget.max_iterations is not None:
             iteration_limit = min(iteration_limit, budget.max_iterations)
@@ -374,6 +381,7 @@ class MainLoopAgent:
                 str(args["mission_id"]),
                 int(args["generation_index"]),
                 str(args["candidate_id"]),
+                claim_token=str(args["claim_token"]),
                 filename=str(args["filename"]),
                 content=str(args["content"]),
                 kind=str(args.get("kind") or "text"),
@@ -567,12 +575,20 @@ TOOL_SCHEMAS = [
             "mission_id": {"type": "string"},
             "generation_index": {"type": "integer"},
             "candidate_id": {"type": "string"},
+            "claim_token": {"type": "string"},
             "filename": {"type": "string"},
             "content": {"type": "string"},
             "kind": {"type": "string"},
             "description": {"type": "string"},
         },
-        ["mission_id", "generation_index", "candidate_id", "filename", "content"],
+        [
+            "mission_id",
+            "generation_index",
+            "candidate_id",
+            "claim_token",
+            "filename",
+            "content",
+        ],
     ),
     _function(
         "candidate_submit_result",
