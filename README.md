@@ -287,9 +287,32 @@ feedback paths within a mission:
   current candidate, and injects the most recent few into its prompt so the
   spawned agent avoids the same rake.
 
-The failure class and remedy hint are also surfaced on the queryable
-`candidate_finished` event, which is the basis for a future cross-mission
-lessons layer.
+### Cross-mission lessons
+
+The same `Outcome` records also feed learning *across* missions. The derived,
+rebuildable `MissionIndex` (`multi_loop/index.py`) carries an `outcomes` table
+keyed by candidate, role, exact failing capability, and failure class, plus a
+normalized mapping of every capability required by each candidate. When the
+orchestrator is given a `lessons_index`, it refreshes the index from JSON at the
+start of each generation and queries `relevant_lessons` for failures in *other*
+missions that share the spawning loop's role or any required capability. Those
+remedy hints are merged with the same-mission pitfalls (same-mission first, then
+the most recent cross-mission lessons, de-duplicated and capped) and injected
+into the loop's prompt — so a timeout that sank a campaign in one mission warns
+the campaign loop of the next.
+
+Two properties keep this honest over time:
+
+- **Recency weighting.** Lessons are returned newest-first and capped, so fresh
+  failures dominate and stale advice fades rather than piling up.
+- **State-tied invalidation.** A `tool_unavailable` lesson is dropped the moment
+  the capability it complains about is configured again, instead of warning about
+  a problem that no longer exists.
+
+Cross-mission learning is opt-in at the library level (`lessons_index=None`
+leaves behaviour unchanged) and enabled by default in the real run paths — the
+`run` CLI command, MCP `run_generation`, and the scheduler. The failure class
+and remedy hint are also surfaced on the queryable `candidate_finished` event.
 
 ## Examples
 

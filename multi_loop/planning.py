@@ -19,7 +19,7 @@ from .runners import RunResult
 
 # Cap on how many distinct failure lessons are injected into a single prompt, so
 # an agent gets the most relevant warnings without drowning in stale advice.
-_MAX_PITFALLS = 3
+MAX_PITFALLS = 3
 
 _CAPABILITY_RUNNERS: dict[str, str] = {
     "agent_loop": "mock",
@@ -73,7 +73,7 @@ class HeuristicPortfolioPlanner:
         candidates.extend(_mission_specific_loops(mission))
         for capability_name in mission.selected_capabilities:
             if capability_name == "agent_loop" or any(
-                capability_name in _capability_names(candidate) for candidate in candidates
+                capability_name in candidate_capability_names(candidate) for candidate in candidates
             ):
                 continue
             candidates.append(
@@ -138,7 +138,7 @@ class HeuristicPortfolioPlanner:
                     f"Improve on generation {previous.index} findings with more specificity, "
                     "evidence, and actionable next steps."
                 ),
-                capabilities=_capability_names(winner),
+                capabilities=candidate_capability_names(winner),
                 parent_ids=[winner.id],
             )
             candidates.append(child)
@@ -155,7 +155,7 @@ class HeuristicPortfolioPlanner:
                 role=f"{blocked.role}_approved",
                 goal=f"Resume now-approved work: {blocked.goal}",
                 success_criteria=blocked.success_criteria,
-                capabilities=_capability_names(blocked),
+                capabilities=candidate_capability_names(blocked),
                 parent_ids=[blocked.id],
             )
             candidates.append(child)
@@ -171,7 +171,7 @@ class HeuristicPortfolioPlanner:
                     f"for: {mission.statement}"
                 ),
                 success_criteria="Return one integrated candidate that merges the best insights from both parents.",
-                capabilities=sorted(set(_capability_names(left) + _capability_names(right))),
+                capabilities=sorted(set(candidate_capability_names(left) + candidate_capability_names(right))),
                 parent_ids=[left.id, right.id],
             )
             candidates.append(child)
@@ -276,7 +276,7 @@ def _retry_for_failure(mission: Mission, failed: CandidateLoop) -> tuple[Candida
     blind retry that would just fail again.
     """
     failure_class = failed.outcome.failure_class if failed.outcome else None
-    capabilities = _capability_names(failed)
+    capabilities = candidate_capability_names(failed)
 
     if failure_class is FailureClass.RESOURCE_EXHAUSTED:
         child = _base_loop(
@@ -381,10 +381,10 @@ def collect_pitfalls(mission: Mission, candidate: CandidateLoop) -> list[str]:
 
     Relevant means the prior loop is a parent of this candidate or shares a
     capability with it. Hints are returned most-recent-first and capped at
-    ``_MAX_PITFALLS`` so the next prompt carries the freshest, most pertinent
+    ``MAX_PITFALLS`` so the next prompt carries the freshest, most pertinent
     warnings without stale advice crowding the context.
     """
-    candidate_capabilities = set(_capability_names(candidate))
+    candidate_capabilities = set(candidate_capability_names(candidate))
     parent_ids = set(candidate.parent_ids)
     hints: list[str] = []
     seen: set[str] = set()
@@ -394,19 +394,19 @@ def collect_pitfalls(mission: Mission, candidate: CandidateLoop) -> list[str]:
             if outcome is None or outcome.success or not outcome.remedy_hint:
                 continue
             if prior.id not in parent_ids and not candidate_capabilities.intersection(
-                _capability_names(prior)
+                candidate_capability_names(prior)
             ):
                 continue
             if outcome.remedy_hint in seen:
                 continue
             seen.add(outcome.remedy_hint)
             hints.append(outcome.remedy_hint)
-            if len(hints) >= _MAX_PITFALLS:
+            if len(hints) >= MAX_PITFALLS:
                 return hints
     return hints
 
 
-def _capability_names(candidate: CandidateLoop) -> list[str]:
+def candidate_capability_names(candidate: CandidateLoop) -> list[str]:
     names = [ref.name for ref in candidate.required_capabilities]
     return names or ["agent_loop"]
 

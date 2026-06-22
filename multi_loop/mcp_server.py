@@ -555,7 +555,11 @@ def run_generation_blocking_impl(
 ) -> dict[str, Any]:
     store = _store(root)
     try:
-        result = MissionOrchestrator(store=store, workspace=workspace).run_generation(
+        result = MissionOrchestrator(
+            store=store,
+            workspace=workspace,
+            lessons_index=MissionIndex(store.root),
+        ).run_generation(
             mission_id,
             runner_name=runner,
             runner_command=runner_command,

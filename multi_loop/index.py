@@ -25,7 +25,7 @@ from .models import Mission
 if TYPE_CHECKING:
     from .storage import MissionStore
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE missions (
@@ -59,8 +59,27 @@ CREATE TABLE ledger (
     summary TEXT,
     created_at TEXT
 );
+CREATE TABLE outcomes (
+    candidate_id TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL,
+    role TEXT,
+    capability TEXT,
+    success INTEGER NOT NULL,
+    failure_class TEXT,
+    failure_subreason TEXT,
+    remedy_hint TEXT,
+    fitness REAL,
+    created_at TEXT
+);
+CREATE TABLE outcome_capabilities (
+    candidate_id TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    PRIMARY KEY (candidate_id, capability)
+);
 CREATE INDEX idx_candidates_mission ON candidates(mission_id);
 CREATE INDEX idx_ledger_mission ON ledger(mission_id);
+CREATE INDEX idx_outcomes_lookup ON outcomes(role, capability, failure_class);
+CREATE INDEX idx_outcome_capabilities_lookup ON outcome_capabilities(capability, candidate_id);
 """
 
 
@@ -71,6 +90,21 @@ class LedgerHit:
     summary: str
     generation_index: int | None
     candidate_loop_id: str | None
+    created_at: str | None
+
+
+@dataclass(slots=True)
+class Lesson:
+    """A failed-loop outcome retrieved as cross-mission learning."""
+
+    candidate_id: str
+    mission_id: str
+    role: str | None
+    capability: str | None
+    failure_class: str | None
+    failure_subreason: str | None
+    remedy_hint: str | None
+    fitness: float | None
     created_at: str | None
 
 
@@ -94,7 +128,14 @@ class MissionIndex:
         if version == SCHEMA_VERSION and _has_tables(conn):
             return
         # Derived index: drop and recreate rather than migrate.
-        for table in ("missions", "candidates", "candidate_parents", "ledger"):
+        for table in (
+            "missions",
+            "candidates",
+            "candidate_parents",
+            "ledger",
+            "outcome_capabilities",
+            "outcomes",
+        ):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.executescript(_SCHEMA)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -108,6 +149,8 @@ class MissionIndex:
             conn.execute("DELETE FROM candidates")
             conn.execute("DELETE FROM candidate_parents")
             conn.execute("DELETE FROM ledger")
+            conn.execute("DELETE FROM outcome_capabilities")
+            conn.execute("DELETE FROM outcomes")
             for mission in missions:
                 self._index_mission(conn, mission)
                 for entry in store.read_ledger(mission.id):
@@ -157,6 +200,28 @@ class MissionIndex:
                         "INSERT OR REPLACE INTO candidate_parents VALUES (?,?)",
                         (candidate.id, parent_id),
                     )
+                outcome = candidate.outcome
+                if outcome is not None:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO outcomes VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            candidate.id,
+                            mission.id,
+                            candidate.role,
+                            _lesson_capability(candidate, outcome),
+                            1 if outcome.success else 0,
+                            outcome.failure_class.value if outcome.failure_class else None,
+                            outcome.failure_subreason,
+                            outcome.remedy_hint,
+                            candidate.fitness.score if candidate.fitness else None,
+                            outcome.created_at,
+                        ),
+                    )
+                    for capability in _capability_names(candidate):
+                        conn.execute(
+                            "INSERT OR REPLACE INTO outcome_capabilities VALUES (?,?)",
+                            (candidate.id, capability),
+                        )
 
     def search_ledger(self, query: str, *, limit: int = 20) -> list[LedgerHit]:
         like = f"%{query.strip()}%"
@@ -193,6 +258,72 @@ class MissionIndex:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def relevant_lessons(
+        self,
+        *,
+        roles: list[str] | None = None,
+        capabilities: list[str] | None = None,
+        exclude_mission_id: str | None = None,
+        limit: int | None = 5,
+    ) -> list[Lesson]:
+        """Return failed-loop lessons matching a role or capability, newest first.
+
+        Ordering by ``created_at`` descending is the recency weighting: the most
+        recent failures surface first, and the ``limit`` caps how many a caller
+        injects. Successes and outcomes without a remedy hint are excluded since
+        they carry no lesson.
+        """
+        roles = [role for role in (roles or []) if role]
+        capabilities = [name for name in (capabilities or []) if name]
+        if not roles and not capabilities:
+            return []
+
+        match_clauses: list[str] = []
+        params: list[object] = []
+        if roles:
+            match_clauses.append(f"role IN ({','.join('?' * len(roles))})")
+            params.extend(roles)
+        if capabilities:
+            match_clauses.append(
+                "EXISTS (SELECT 1 FROM outcome_capabilities oc "
+                "WHERE oc.candidate_id = outcomes.candidate_id "
+                f"AND oc.capability IN ({','.join('?' * len(capabilities))}))"
+            )
+            params.extend(capabilities)
+
+        where = (
+            "success = 0 AND remedy_hint IS NOT NULL AND remedy_hint != '' "
+            f"AND ({' OR '.join(match_clauses)})"
+        )
+        if exclude_mission_id:
+            where += " AND mission_id != ?"
+            params.append(exclude_mission_id)
+        with self._connect() as conn:
+            self._ensure_schema(conn)
+            query = (
+                "SELECT candidate_id, mission_id, role, capability, failure_class, "
+                "failure_subreason, remedy_hint, fitness, created_at FROM outcomes "
+                f"WHERE {where} ORDER BY created_at DESC"
+            )
+            if limit is not None:
+                query += " LIMIT ?"
+                params.append(limit)
+            rows = conn.execute(query, params).fetchall()
+        return [
+            Lesson(
+                candidate_id=row["candidate_id"],
+                mission_id=row["mission_id"],
+                role=row["role"],
+                capability=row["capability"],
+                failure_class=row["failure_class"],
+                failure_subreason=row["failure_subreason"],
+                remedy_hint=row["remedy_hint"],
+                fitness=row["fitness"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
     def lineage(self, candidate_id: str) -> list[str]:
         """Return the candidate's ancestor ids (parents, grandparents, ...)."""
         with self._connect() as conn:
@@ -212,8 +343,28 @@ class MissionIndex:
         return [row["id"] for row in rows]
 
 
+def _capability_names(candidate: Any) -> list[str]:
+    names = [ref.name for ref in candidate.required_capabilities]
+    return names or ["agent_loop"]
+
+
+def _lesson_capability(candidate: Any, outcome: Any) -> str:
+    """Return the exact unavailable capability, otherwise the primary capability."""
+    failed_capability = outcome.signals.get("capability")
+    if outcome.failure_class and outcome.failure_class.value == "tool_unavailable":
+        if isinstance(failed_capability, str) and failed_capability:
+            return failed_capability
+    return _capability_names(candidate)[0]
+
+
 def _has_tables(conn: sqlite3.Connection) -> bool:
-    row = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='missions'"
-    ).fetchone()
-    return row is not None
+    rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    names = {row[0] for row in rows}
+    return {
+        "missions",
+        "candidates",
+        "candidate_parents",
+        "ledger",
+        "outcomes",
+        "outcome_capabilities",
+    }.issubset(names)

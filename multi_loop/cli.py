@@ -324,7 +324,11 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
 
     if args.command == "run":
         workspace = Path(args.workspace).resolve() if args.workspace else None
-        orchestrator = MissionOrchestrator(store=store, workspace=workspace)
+        orchestrator = MissionOrchestrator(
+            store=store,
+            workspace=workspace,
+            lessons_index=MissionIndex(store.root),
+        )
         result = orchestrator.run_generation(
             args.mission_id,
             runner_name=args.runner,

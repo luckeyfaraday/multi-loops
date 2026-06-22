@@ -271,7 +271,7 @@ def _agent_prompt(request: RunRequest) -> str:
     if request.pitfalls:
         bullets = "\n".join(f"- {pitfall}" for pitfall in request.pitfalls)
         pitfalls = (
-            "Known pitfalls from earlier in this mission (avoid repeating them):\n"
+            "Known pitfalls from earlier mission runs (avoid repeating them):\n"
             f"{bullets}\n\n"
         )
     return (

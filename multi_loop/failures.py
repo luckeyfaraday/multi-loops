@@ -14,6 +14,7 @@ the :class:`FailureClassifier` protocol without touching the orchestrator.
 
 from __future__ import annotations
 
+import re
 from typing import Protocol
 
 from .models import CandidateLoop, FailureClass, Outcome
@@ -108,6 +109,13 @@ def _classify_failure(result: RunResult) -> tuple[FailureClass, str, dict[str, o
         # them, and the distinction drives different recovery in the planner.
         summary = (result.summary or "").lower()
         if "unavailable" in summary or "not registered" in summary:
+            match = re.search(
+                r"required capability (?:unavailable|is not registered):\s*([^\s(.]+)",
+                result.summary or "",
+                flags=re.IGNORECASE,
+            )
+            if match:
+                signals["capability"] = match.group(1).rstrip(".")
             return FailureClass.TOOL_UNAVAILABLE, "capability_unavailable", signals
         return FailureClass.POLICY_BLOCKED, "approval_required", signals
 
