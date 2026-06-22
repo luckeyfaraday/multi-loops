@@ -14,6 +14,12 @@ from .orchestrator import MissionOrchestrator
 from .providers import ProviderClient, ProviderReply, ProviderToolCall
 
 
+# Minimum length for a user confirmation quote. A substring match against the
+# latest user message is lenient, so requiring a substantive span prevents a
+# coincidental short token from authorizing an external action.
+_MIN_CONFIRMATION_QUOTE_LEN = 8
+
+
 @dataclass(slots=True)
 class AgentTurnResult:
     session_id: str
@@ -76,12 +82,19 @@ class MainLoopAgent:
         total_completion = 0
         started = time.monotonic()
 
+        base_timeout = getattr(self.client, "timeout", None)
+
         for iteration in range(iteration_limit + 1):
             if budget.max_seconds is not None and time.monotonic() - started >= budget.max_seconds:
                 message = f"Agent turn exceeded the time budget of {budget.max_seconds} seconds."
                 self.service.sessions.append_entry(session_id, "loop_stopped", {"reason": message})
                 self._record_usage(session_id, total_prompt, total_completion)
                 raise RuntimeError(message)
+            # Clamp the transport timeout to the time remaining in the budget so a
+            # single hung provider call cannot overshoot max_seconds.
+            if budget.max_seconds is not None and base_timeout is not None:
+                remaining = budget.max_seconds - (time.monotonic() - started)
+                self.client.timeout = max(0.1, min(base_timeout, remaining))
             reply = self.client.complete(messages, TOOL_SCHEMAS)
             total_prompt += reply.prompt_tokens
             total_completion += reply.completion_tokens
@@ -402,6 +415,13 @@ class MainLoopAgent:
         *,
         after_entry_type: str | None = None,
     ) -> None:
+        # A substring match is lenient, so require a substantive span of the
+        # user's own words rather than a coincidental token like "yes".
+        if len(quote.strip()) < _MIN_CONFIRMATION_QUOTE_LEN:
+            raise ValueError(
+                "Confirmation quote must reproduce a substantive span of the user's "
+                f"approval (at least {_MIN_CONFIRMATION_QUOTE_LEN} characters)."
+            )
         entries = self.service.sessions.read_entries(session_id)
         boundary = -1
         if after_entry_type:

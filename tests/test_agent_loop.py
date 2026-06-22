@@ -113,6 +113,26 @@ class MainLoopAgentTests(unittest.TestCase):
 
         self.assertTrue(confirmed["created"])
 
+    def test_trivially_short_confirmation_quote_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / ".multi-loop"
+            service = MainLoopService(root)
+            session_id = service.open(interface="cli", provider_id="local")["session"]["id"]
+            service.update_draft(
+                session_id,
+                {"statement": "Build it", "success_criteria": "Five users validate it"},
+            )
+            service.sessions.append_message(session_id, "user", "yes")
+            agent = MainLoopAgent(root, FakeProvider([]))
+            call = ProviderToolCall(
+                id="confirm-short",
+                name="confirm_mission",
+                arguments={"confirmation_quote": "yes"},
+            )
+
+            with self.assertRaisesRegex(ValueError, "substantive span"):
+                agent._dispatch_tool(session_id, call)
+
     def test_long_session_compacts_without_deleting_history(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / ".multi-loop"
