@@ -1,5 +1,6 @@
 .multi-loop/
 .context-workspace/
+.venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
