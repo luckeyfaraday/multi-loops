@@ -481,8 +481,14 @@ other agent runtime is required.
 The current MVP has a deterministic one-generation runtime:
 
 - `MissionOrchestrator.create_mission(...)` creates a persisted mission.
-- `MissionOrchestrator.run_generation(...)` plans three candidate loops, runs them,
+- `MissionOrchestrator.run_generation(...)` plans a candidate portfolio, runs it,
   scores fitness, selects lineage, writes synthesis, and appends event/ledger data.
+  The planner is genetic, not a fixed candidate count:
+  - The first generation seeds three base loops (research, strategy, review), plus
+    any mission-specific loops, plus one loop per selected capability.
+  - Later generations evolve from the previous result: refine selected winners,
+    retry failures with narrower scope, resume now-approved blocked candidates,
+    cross over the strongest winners, and add a synthesis worker.
 - `MockRunner` produces deterministic local artifacts for tests and demos.
 - `ShellRunner` runs a configured shell command.
 - `AgentCommandRunner` runs an external agent CLI command with the candidate prompt
@@ -629,6 +635,13 @@ The server exposes the mission runtime directly:
   submit an idempotent result, and let multi-loop deterministically select and
   synthesize the generation. No nested model is invoked.
 - `onboard` builds an onboarding plan and can create the mission.
+- `capability_setup_plan` and `capability_setup_apply` drive interactive capability
+  configuration on a draft session: plan the required config/approval changes, show
+  them to the user, and apply them only with a `confirmation_quote`.
+  `capability_add_command` persists a user-approved command as a brand-new
+  capability (with its `side_effect_class`) and attaches it to the draft.
+  `mission_capability_setup_plan` and `mission_capability_setup_apply` are the same
+  plan/apply pair for an already-created mission. None of these embed credentials.
 - `create_mission`, `mission_status`, `list_missions`, and `approve_capability`
   manage persisted mission state.
 - `run_generation` runs one generation. It detaches by default and returns a
@@ -680,7 +693,5 @@ Python harness enforces the loop mechanics.
   selected artifacts back into a mission workspace?
 - Should fitness be a single numeric score, a rubric object, or both?
 - How much autonomy should mutation have before asking the user?
-- Should the first version support true crossover, or start with selection plus
-  mutation only?
 - Should multi-loop be exposed as a separate MCP tool, or as an extension of the
   existing `orchestrate` server?
