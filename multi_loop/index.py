@@ -258,6 +258,40 @@ class MissionIndex:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_lessons(self, *, limit: int | None = 20) -> list[Lesson]:
+        """Return all failed-loop lessons, newest first."""
+        with self._connect() as conn:
+            self._ensure_schema(conn)
+            query = (
+                "SELECT candidate_id, mission_id, role, capability, failure_class, "
+                "failure_subreason, remedy_hint, fitness, created_at FROM outcomes "
+                "WHERE success = 0 AND remedy_hint IS NOT NULL AND remedy_hint != '' "
+                "ORDER BY created_at DESC"
+            )
+            params: list[object] = []
+            if limit is not None:
+                query += " LIMIT ?"
+                params.append(limit)
+            rows = conn.execute(query, params).fetchall()
+        return _lesson_rows(rows)
+
+    def search_lessons(self, query: str, *, limit: int = 20) -> list[Lesson]:
+        """Search failed-loop lessons by text, newest first."""
+        like = f"%{query.strip()}%"
+        with self._connect() as conn:
+            self._ensure_schema(conn)
+            rows = conn.execute(
+                "SELECT candidate_id, mission_id, role, capability, failure_class, "
+                "failure_subreason, remedy_hint, fitness, created_at FROM outcomes "
+                "WHERE success = 0 AND remedy_hint IS NOT NULL AND remedy_hint != '' "
+                "AND (mission_id LIKE ? OR candidate_id LIKE ? OR role LIKE ? "
+                "OR capability LIKE ? OR failure_class LIKE ? OR failure_subreason LIKE ? "
+                "OR remedy_hint LIKE ?) "
+                "ORDER BY created_at DESC LIMIT ?",
+                (like, like, like, like, like, like, like, limit),
+            ).fetchall()
+        return _lesson_rows(rows)
+
     def relevant_lessons(
         self,
         *,
@@ -309,20 +343,7 @@ class MissionIndex:
                 query += " LIMIT ?"
                 params.append(limit)
             rows = conn.execute(query, params).fetchall()
-        return [
-            Lesson(
-                candidate_id=row["candidate_id"],
-                mission_id=row["mission_id"],
-                role=row["role"],
-                capability=row["capability"],
-                failure_class=row["failure_class"],
-                failure_subreason=row["failure_subreason"],
-                remedy_hint=row["remedy_hint"],
-                fitness=row["fitness"],
-                created_at=row["created_at"],
-            )
-            for row in rows
-        ]
+        return _lesson_rows(rows)
 
     def lineage(self, candidate_id: str) -> list[str]:
         """Return the candidate's ancestor ids (parents, grandparents, ...)."""
@@ -355,6 +376,23 @@ def _lesson_capability(candidate: Any, outcome: Any) -> str:
         if isinstance(failed_capability, str) and failed_capability:
             return failed_capability
     return _capability_names(candidate)[0]
+
+
+def _lesson_rows(rows: list[sqlite3.Row]) -> list[Lesson]:
+    return [
+        Lesson(
+            candidate_id=row["candidate_id"],
+            mission_id=row["mission_id"],
+            role=row["role"],
+            capability=row["capability"],
+            failure_class=row["failure_class"],
+            failure_subreason=row["failure_subreason"],
+            remedy_hint=row["remedy_hint"],
+            fitness=row["fitness"],
+            created_at=row["created_at"],
+        )
+        for row in rows
+    ]
 
 
 def _has_tables(conn: sqlite3.Connection) -> bool:

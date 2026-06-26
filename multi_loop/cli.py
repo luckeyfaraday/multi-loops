@@ -179,6 +179,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     search_parser.add_argument("--limit", type=int, default=20, help="Maximum results")
 
+    lessons_parser = subparsers.add_parser("lessons", help="List or search learned failure lessons")
+    lessons_commands = lessons_parser.add_subparsers(dest="lessons_command", required=True)
+    lessons_list = lessons_commands.add_parser("list", help="List learned failure lessons")
+    lessons_list.add_argument("--limit", type=int, default=20, help="Maximum results")
+    lessons_search = lessons_commands.add_parser("search", help="Search learned failure lessons")
+    lessons_search.add_argument("query", help="Text to search for")
+    lessons_search.add_argument("--limit", type=int, default=20, help="Maximum results")
+
     lineage_parser = subparsers.add_parser("lineage", help="Show a candidate loop's ancestry")
     lineage_parser.add_argument("candidate_id", help="Candidate loop ID")
 
@@ -435,7 +443,7 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
             )
         return 0
 
-    if args.command in {"search", "lineage"}:
+    if args.command in {"search", "lineage", "lessons"}:
         index = MissionIndex(args.root)
         index.rebuild(store)  # derived index; refresh from JSON before querying
         if args.command == "search":
@@ -446,6 +454,13 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
             else:
                 hits = index.search_ledger(args.query, limit=args.limit)
                 _print_json({"query": args.query, "hits": to_dict(hits)})
+        elif args.command == "lessons":
+            if args.lessons_command == "search":
+                lessons = index.search_lessons(args.query, limit=args.limit)
+                _print_json({"query": args.query, "lessons": to_dict(lessons), "count": len(lessons)})
+            else:
+                lessons = index.list_lessons(limit=args.limit)
+                _print_json({"lessons": to_dict(lessons), "count": len(lessons)})
         else:
             _print_json(
                 {"candidate_id": args.candidate_id, "ancestors": index.lineage(args.candidate_id)}
