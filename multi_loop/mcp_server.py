@@ -784,6 +784,22 @@ def search_impl(
     return {"query": query, "hits": to_dict(index.search_ledger(query, limit=limit))}
 
 
+def lessons_list_impl(*, root: str = DEFAULT_ROOT, limit: int = 20) -> dict[str, Any]:
+    index = MissionIndex(root)
+    index.rebuild(_store(root))
+    lessons = index.list_lessons(limit=limit)
+    return {"lessons": to_dict(lessons), "count": len(lessons)}
+
+
+def lessons_search_impl(
+    query: str, *, root: str = DEFAULT_ROOT, limit: int = 20
+) -> dict[str, Any]:
+    index = MissionIndex(root)
+    index.rebuild(_store(root))
+    lessons = index.search_lessons(query, limit=limit)
+    return {"query": query, "lessons": to_dict(lessons), "count": len(lessons)}
+
+
 def lineage_impl(candidate_id: str, *, root: str = DEFAULT_ROOT) -> dict[str, Any]:
     index = MissionIndex(root)
     index.rebuild(_store(root))
@@ -1331,6 +1347,20 @@ def build_server():
     ) -> dict[str, Any]:
         """Search the mission ledger (or mission statements) across all missions."""
         return search_impl(query, root=root, missions=missions, limit=limit)
+
+    @mcp.tool()
+    def lessons_list(root: str = DEFAULT_ROOT, limit: int = 20) -> dict[str, Any]:
+        """List learned failed-loop lessons across all missions."""
+        return lessons_list_impl(root=root, limit=limit)
+
+    @mcp.tool()
+    def lessons_search(
+        query: str,
+        root: str = DEFAULT_ROOT,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Search learned failed-loop lessons across all missions."""
+        return lessons_search_impl(query, root=root, limit=limit)
 
     @mcp.tool()
     def lineage(candidate_id: str, root: str = DEFAULT_ROOT) -> dict[str, Any]:

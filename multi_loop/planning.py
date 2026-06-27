@@ -389,7 +389,7 @@ def collect_pitfalls(mission: Mission, candidate: CandidateLoop) -> list[str]:
     hints: list[str] = []
     seen: set[str] = set()
     for generation in reversed(mission.generations):
-        for prior in generation.candidate_loops:
+        for prior in reversed(generation.candidate_loops):
             outcome = prior.outcome
             if outcome is None or outcome.success or not outcome.remedy_hint:
                 continue
