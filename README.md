@@ -1,9 +1,32 @@
 # Multi-Loop Orchestration
 
-`multi-loop` is a standalone mission orchestration harness inspired by
-single-goal loop systems.
+`multi-loop` turns an agent into a long-running mission operator.
 
-The basic execution pattern it generalizes is a bounded goal loop:
+The user states a mission — "start a company", "find the best ad campaign",
+"build this SaaS" — and stays hands-off. The **operator** (an MCP host agent
+like Claude Code or Codex, or the built-in CLI agent) interviews them once,
+wires up the capabilities the mission needs, then runs and supervises a
+portfolio of goal loops until the mission converges — reconfiguring budgets,
+schedules, runners, and capabilities along the way. `multi-loop` is the
+durable mission brain behind that operator: deterministic state, readiness
+gates, policy, verification, scheduling, lineage, and audit.
+
+## The Operator Model
+
+Three roles, spelled out in [docs/operator.md](docs/operator.md):
+
+- **Principal (the user):** owns the mission statement, side-effect
+  approvals, and checkpoint decisions. Nothing else.
+- **Operator (the agent):** the executive director. Owns preparation,
+  configuration, execution, and supervision of everyone and everything — the
+  candidate loops, sub-agents, schedules, and capabilities. `mission_readiness`
+  drives its prep; `mission_configure` and the schedule controls give it
+  audited authority over every mutable mission setting.
+- **Harness (multi-loop):** owns control flow, state, budgets, leases,
+  selection, convergence, and the audit ledger. Models provide judgement
+  inside well-scoped roles; the harness makes it durable and accountable.
+
+The basic execution pattern the harness generalizes is a bounded goal loop:
 
 ```text
 goal -> decompose -> execute workers -> aggregate -> review -> refine -> done
@@ -36,6 +59,10 @@ The reference model has three levels:
    iterates until success.
 3. Multi-loop orchestration: user gives a mission, the meta-harness runs many
    goal loops inside a broader orchestration loop.
+4. Operated missions: an operator agent owns the meta-loop on the user's
+   behalf — prep, configuration, execution, and supervision — and the user is
+   only consulted for the mission itself, side-effect approvals, and
+   checkpoints.
 
 ## Design Principle
 
@@ -704,6 +731,21 @@ The server exposes the mission runtime directly:
   plan/apply pair for an already-created mission. None of these embed credentials.
 - `create_mission`, `mission_status`, `list_missions`, and `approve_capability`
   manage persisted mission state.
+- `mission_readiness` is the operator's prep instrument: for a draft session or
+  a created mission it classifies every required capability (`ready`,
+  `needs_setup`, `needs_approval`, `unknown`) with concrete fixes, checks that
+  scheduled missions have a real unattended runner, and returns blockers,
+  notices, and next actions. Run it before confirming, before the first
+  generation, and after any capability or approval change.
+- `mission_configure` gives the operator audited authority over every mutable
+  mission setting after creation: success criteria, clarifications, budget,
+  schedule (null clears it), execution profile (runner, runner command,
+  verification, workspace, autonomy level), and the selected capability list.
+  The mission statement and side-effect approvals are deliberately excluded;
+  each applied patch is validated atomically and recorded as a
+  `mission_configured` event plus ledger entry.
+- `mission_pause`, `mission_resume`, and `mission_trigger` control mission
+  schedules over MCP, mirroring the CLI's `pause`/`resume`/`trigger`.
 - `run_generation` runs one generation. It detaches by default and returns a
   `run_id` immediately.
 - `run_status`, `run_tail`, `run_result`, and `run_list` monitor detached runs.

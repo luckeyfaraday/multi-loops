@@ -27,6 +27,7 @@ from .models import (
 )
 from .orchestrator import MissionOrchestrator
 from .policy import APPROVAL_REQUIRED
+from .readiness import capability_readiness_items, mission_readiness_report
 from .schedule_util import parse_schedule
 from .storage import MissionStore
 
@@ -272,6 +273,41 @@ class MainLoopService:
             "unavailable_capabilities": unavailable,
             "ready_to_create": not errors and session.active_mission_id is None,
         }
+
+    def readiness(self, session_id: str) -> dict[str, Any]:
+        """Report draft readiness: capability gaps, blockers, and next actions.
+
+        ``ready`` mirrors draft validation (the authoritative confirm gate);
+        the per-capability items give the operator the actionable detail —
+        missing env vars, setup hints, and approval state — needed to close
+        each gap conversationally before the mission is confirmed.
+        """
+        session = self.sessions.load(session_id)
+        validation = self._validation_for_session(session)
+        items = capability_readiness_items(
+            self.capabilities,
+            session.draft.requested_capabilities,
+            session.draft.capability_approvals,
+        )
+        next_actions = [
+            f"{item['name']}: {item['fix']}" for item in items if item["status"] != "ready"
+        ]
+        for error in validation["errors"]:
+            if "capabilit" not in error.lower():
+                next_actions.append(f"resolve: {error}")
+        return {
+            "scope": "draft",
+            "session_id": session_id,
+            "ready": validation["valid"],
+            "capabilities": items,
+            "blockers": validation["errors"],
+            "next_actions": next_actions or ["confirm the mission after explicit user approval"],
+        }
+
+    def mission_readiness(self, mission_id: str) -> dict[str, Any]:
+        """Report readiness for a created mission before running a generation."""
+        mission = self.missions.load_mission(mission_id)
+        return mission_readiness_report(mission, self.capabilities)
 
     def capability_setup_plan(
         self,

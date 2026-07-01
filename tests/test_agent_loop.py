@@ -209,6 +209,80 @@ class MainLoopAgentTests(unittest.TestCase):
         self.assertFalse(claim["claim"]["blocked"])
         self.assertEqual(claim["claim"]["candidate"]["runner"], "shell")
 
+    def test_operator_tools_control_mission_from_cli_agent(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / ".multi-loop"
+            service = MainLoopService(root)
+            session_id = service.open(
+                interface="cli", provider_id="local", mission_seed="Operate"
+            )["session"]["id"]
+            service.update_draft(session_id, {"success_criteria": "Evidence"})
+            agent = MainLoopAgent(root, FakeProvider([]))
+            mission = agent.orchestrator.create_mission(
+                "Operate", "Evidence", schedule="every 1h"
+            )
+
+            draft_report = agent._dispatch_tool(
+                session_id,
+                ProviderToolCall(id="r1", name="mission_readiness", arguments={}),
+            )
+            self.assertEqual(draft_report["scope"], "draft")
+            mission_report = agent._dispatch_tool(
+                session_id,
+                ProviderToolCall(
+                    id="r2", name="mission_readiness", arguments={"mission_id": mission.id}
+                ),
+            )
+            self.assertEqual(mission_report["scope"], "mission")
+
+            with self.assertRaisesRegex(ValueError, "substantive span"):
+                agent._dispatch_tool(
+                    session_id,
+                    ProviderToolCall(
+                        id="c0",
+                        name="mission_configure",
+                        arguments={
+                            "mission_id": mission.id,
+                            "patch": {"budget": {"max_tokens": 500}},
+                            "confirmation_quote": "yes",
+                        },
+                    ),
+                )
+
+            service.sessions.append_message(
+                session_id, "user", "Yes, raise the token budget to 500."
+            )
+            configured = agent._dispatch_tool(
+                session_id,
+                ProviderToolCall(
+                    id="c1",
+                    name="mission_configure",
+                    arguments={
+                        "mission_id": mission.id,
+                        "patch": {"budget": {"max_tokens": 500}},
+                        "confirmation_quote": "raise the token budget to 500",
+                    },
+                ),
+            )
+            self.assertEqual(configured["mission"]["budget"]["max_tokens"], 500)
+
+            paused = agent._dispatch_tool(
+                session_id,
+                ProviderToolCall(
+                    id="p1",
+                    name="mission_pause",
+                    arguments={"mission_id": mission.id, "reason": "holding"},
+                ),
+            )
+            self.assertEqual(paused["schedule"]["state"], "paused")
+            resumed = agent._dispatch_tool(
+                session_id,
+                ProviderToolCall(
+                    id="p2", name="mission_resume", arguments={"mission_id": mission.id}
+                ),
+            )
+            self.assertEqual(resumed["schedule"]["state"], "scheduled")
+
     def test_long_session_compacts_without_deleting_history(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / ".multi-loop"

@@ -349,6 +349,32 @@ class MainLoopAgent:
         if call.name == "mission_status":
             mission = self.service.missions.load_mission(str(args["mission_id"]))
             return {"mission": to_dict(mission)}
+        if call.name == "mission_readiness":
+            mission_id = str(args.get("mission_id") or "").strip()
+            if mission_id:
+                return self.service.mission_readiness(mission_id)
+            return self.service.readiness(session_id)
+        if call.name == "mission_configure":
+            quote = str(args.get("confirmation_quote") or "").strip()
+            self._require_user_quote(session_id, quote)
+            mission = self.orchestrator.configure_mission(
+                str(args["mission_id"]),
+                args.get("patch") or {},
+                changed_by="cli_user",
+            )
+            return {"mission": to_dict(mission)}
+        if call.name == "mission_pause":
+            mission = self.orchestrator.pause_schedule(
+                str(args["mission_id"]),
+                reason=str(args.get("reason") or "").strip() or None,
+            )
+            return {"mission_id": mission.id, "schedule": to_dict(mission.schedule)}
+        if call.name == "mission_resume":
+            mission = self.orchestrator.resume_schedule(str(args["mission_id"]))
+            return {"mission_id": mission.id, "schedule": to_dict(mission.schedule)}
+        if call.name == "mission_trigger":
+            mission = self.orchestrator.trigger_schedule(str(args["mission_id"]))
+            return {"mission_id": mission.id, "schedule": to_dict(mission.schedule)}
         if call.name == "approve_capability":
             quote = str(args.get("confirmation_quote") or "").strip()
             if not quote:
@@ -578,6 +604,42 @@ TOOL_SCHEMAS = [
         ["mission_id", "capability_names", "confirmation_quote"],
     ),
     _function("mission_status", "Read canonical mission state.", {"mission_id": {"type": "string"}}, ["mission_id"]),
+    _function(
+        "mission_readiness",
+        "Report capability gaps, blockers, and next actions before running work. "
+        "Omit mission_id to check the current draft.",
+        {"mission_id": {"type": "string"}},
+    ),
+    _function(
+        "mission_configure",
+        "Reconfigure a mission (success_criteria, clarifications, budget, schedule, "
+        "execution_profile, selected_capabilities) after the user approves the change. "
+        "The mission statement and approvals cannot be changed.",
+        {
+            "mission_id": {"type": "string"},
+            "patch": {"type": "object"},
+            "confirmation_quote": {"type": "string"},
+        },
+        ["mission_id", "patch", "confirmation_quote"],
+    ),
+    _function(
+        "mission_pause",
+        "Pause a mission's schedule so ticks skip it until resumed.",
+        {"mission_id": {"type": "string"}, "reason": {"type": "string"}},
+        ["mission_id"],
+    ),
+    _function(
+        "mission_resume",
+        "Resume a paused mission schedule and recompute its next run.",
+        {"mission_id": {"type": "string"}},
+        ["mission_id"],
+    ),
+    _function(
+        "mission_trigger",
+        "Mark a scheduled mission due now so the next tick runs a generation.",
+        {"mission_id": {"type": "string"}},
+        ["mission_id"],
+    ),
     _function(
         "approve_capability",
         "Record capability-scoped approval only after the user explicitly approves the external action class.",

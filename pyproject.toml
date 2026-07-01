@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "multi-loop"
 version = "0.2.0"
-description = "Deterministic multi-loop mission orchestration harness"
+description = "Mission orchestration harness that turns an agent into a long-running mission operator"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

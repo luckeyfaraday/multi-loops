@@ -46,6 +46,24 @@ from .storage import MissionNotFound, MissionStore
 from .verification import run_verification
 
 
+# Mission fields the operator may reconfigure after creation. The statement
+# and approvals are excluded on purpose: the statement is the user's word, and
+# approvals must go through the explicit approve_capability gate.
+_CONFIGURABLE_MISSION_FIELDS = frozenset(
+    {
+        "success_criteria",
+        "clarifications",
+        "budget",
+        "schedule",
+        "execution_profile",
+        "selected_capabilities",
+    }
+)
+_CONFIGURABLE_PROFILE_FIELDS = frozenset(
+    {"runner", "runner_command", "verification", "workspace", "autonomy_level"}
+)
+
+
 @dataclass(slots=True)
 class GenerationRunResult:
     mission_id: str
@@ -163,6 +181,169 @@ class MissionOrchestrator:
             mission_id=mission.id,
             event_type="capability_approved",
             summary=f"Approved capability {capability} for {approved_by.strip()}",
+        )
+        self._append_ledger(mission, entry)
+        self.store.save_mission(mission)
+        return mission
+
+    def configure_mission(
+        self,
+        mission_id: str,
+        patch: dict[str, object],
+        *,
+        changed_by: str,
+    ) -> Mission:
+        """Apply an operator configuration patch to a persisted mission.
+
+        The operator owns every mutable mission setting: success criteria,
+        clarifications, budget, schedule, execution profile, and the selected
+        capability list. Two things are deliberately out of reach: the mission
+        statement (the user's word — a different mission is a new mission) and
+        side-effect approvals (which must go through ``approve_capability``).
+        Every applied change is recorded as an event and a ledger entry.
+
+        The whole patch is validated before anything is persisted, so a bad
+        field leaves the stored mission untouched.
+        """
+        if not changed_by.strip():
+            raise ValueError("A changed_by identity is required for mission configuration.")
+        unknown = sorted(set(patch) - _CONFIGURABLE_MISSION_FIELDS)
+        if unknown:
+            raise ValueError(
+                "Unknown or protected mission field(s): "
+                + ", ".join(unknown)
+                + ". The mission statement and approvals cannot be changed here."
+            )
+        if not patch:
+            raise ValueError("Configuration patch is empty.")
+
+        mission = self.store.load_mission(mission_id)
+        changes: dict[str, object] = {}
+
+        if "success_criteria" in patch:
+            criteria = str(patch["success_criteria"]).strip()
+            if not criteria:
+                raise ValueError("success_criteria must not be empty.")
+            mission.success_criteria = criteria
+            changes["success_criteria"] = criteria
+
+        if "clarifications" in patch:
+            value = patch["clarifications"]
+            if not isinstance(value, dict):
+                raise ValueError("clarifications must be an object.")
+            applied: dict[str, str] = {}
+            for key, item in value.items():
+                text = str(item).strip() if item is not None else ""
+                if text:
+                    mission.clarifications[str(key)] = text
+                else:
+                    mission.clarifications.pop(str(key), None)
+                applied[str(key)] = text
+            changes["clarifications"] = applied
+
+        if "budget" in patch:
+            value = patch["budget"]
+            if not isinstance(value, dict):
+                raise ValueError("budget must be an object.")
+            allowed = {"max_iterations", "max_seconds", "max_cost_usd", "max_tokens"}
+            unknown_budget = sorted(set(value) - allowed)
+            if unknown_budget:
+                raise ValueError("Unknown budget field(s): " + ", ".join(unknown_budget))
+            if value.get("max_cost_usd") is not None:
+                raise ValueError(
+                    "budget.max_cost_usd is not supported without provider pricing; "
+                    "use max_tokens instead."
+                )
+            for field_name, field_value in value.items():
+                if field_value is not None and field_value <= 0:
+                    raise ValueError(f"budget.{field_name} must be positive.")
+            for field_name, field_value in value.items():
+                setattr(mission.budget, field_name, field_value)
+            changes["budget"] = dict(value)
+
+        if "schedule" in patch:
+            value = patch["schedule"]
+            expression = str(value).strip() if value is not None else ""
+            if expression:
+                mission.schedule = initialize_schedule(MissionSchedule(expression=expression))
+                changes["schedule"] = expression
+            else:
+                mission.schedule = None
+                changes["schedule"] = None
+
+        if "execution_profile" in patch:
+            value = patch["execution_profile"]
+            if not isinstance(value, dict):
+                raise ValueError("execution_profile must be an object.")
+            unknown_profile = sorted(set(value) - _CONFIGURABLE_PROFILE_FIELDS)
+            if unknown_profile:
+                raise ValueError(
+                    "Unknown execution_profile field(s): " + ", ".join(unknown_profile)
+                )
+            profile = mission.execution_profile
+            applied_profile: dict[str, object] = {}
+            if "runner" in value:
+                runner = str(value["runner"]).strip()
+                if runner not in self.runners.names():
+                    raise ValueError(
+                        f"Unknown runner: {runner}. Available: "
+                        + ", ".join(self.runners.names())
+                    )
+                profile.runner = runner
+                applied_profile["runner"] = runner
+            if "runner_command" in value:
+                raw = value["runner_command"]
+                command = str(raw).strip() if raw is not None else ""
+                profile.runner_command = command or None
+                applied_profile["runner_command"] = command or None
+            if "verification" in value:
+                if not isinstance(value["verification"], list):
+                    raise ValueError("execution_profile.verification must be a list.")
+                commands = [str(item).strip() for item in value["verification"] if str(item).strip()]
+                profile.verification = commands
+                applied_profile["verification"] = commands
+            if "workspace" in value:
+                raw = value["workspace"]
+                workspace = str(raw).strip() if raw is not None else ""
+                profile.workspace = workspace or None
+                applied_profile["workspace"] = workspace or None
+            if "autonomy_level" in value:
+                autonomy = str(value["autonomy_level"]).strip()
+                if not autonomy:
+                    raise ValueError("execution_profile.autonomy_level must not be empty.")
+                profile.autonomy_level = autonomy
+                applied_profile["autonomy_level"] = autonomy
+            changes["execution_profile"] = applied_profile
+
+        if "selected_capabilities" in patch:
+            value = patch["selected_capabilities"]
+            if not isinstance(value, list):
+                raise ValueError("selected_capabilities must be a list.")
+            names: list[str] = []
+            for item in value:
+                clean = str(item).strip()
+                if clean and clean not in names:
+                    names.append(clean)
+            unknown_caps = [name for name in names if self.capabilities.get(name) is None]
+            if unknown_caps:
+                raise ValueError("Unknown capabilities: " + ", ".join(unknown_caps))
+            mission.selected_capabilities = names
+            changes["selected_capabilities"] = names
+
+        self.store.save_mission(mission)
+        self._append_event(
+            mission,
+            "mission_configured",
+            {"changes": changes, "changed_by": changed_by.strip()},
+        )
+        entry = LedgerEntry(
+            mission_id=mission.id,
+            event_type="mission_configured",
+            summary=(
+                "Mission configuration changed ("
+                + ", ".join(sorted(changes))
+                + f") by {changed_by.strip()}"
+            ),
         )
         self._append_ledger(mission, entry)
         self.store.save_mission(mission)

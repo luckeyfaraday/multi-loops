@@ -277,5 +277,120 @@ class MissionOrchestratorTests(unittest.TestCase):
         self.assertIn("SIDE EFFECTS: NONE PERMITTED", prompt)
 
 
+class ConfigureMissionTests(unittest.TestCase):
+    def test_operator_configures_every_mutable_field_with_audit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MissionStore(Path(tmpdir) / ".multi-loop")
+            orchestrator = MissionOrchestrator(store=store)
+            mission = orchestrator.create_mission(
+                "Operate", "Old criteria", clarifications={"stale": "drop me"}
+            )
+
+            orchestrator.configure_mission(
+                mission.id,
+                {
+                    "success_criteria": "New verified criteria",
+                    "clarifications": {"time_horizon": "30 days", "stale": ""},
+                    "budget": {"max_tokens": 500, "max_seconds": 60},
+                    "schedule": "every 1d",
+                    "execution_profile": {
+                        "runner": "shell",
+                        "runner_command": "true",
+                        "verification": ["true", "  "],
+                        "autonomy_level": "scheduled",
+                    },
+                    "selected_capabilities": ["shell_command", "shell_command"],
+                },
+                changed_by="operator",
+            )
+            loaded = store.load_mission(mission.id)
+            events = store.read_events(mission.id)
+            ledger = store.read_ledger(mission.id)
+
+        self.assertEqual(loaded.success_criteria, "New verified criteria")
+        self.assertEqual(loaded.clarifications, {"time_horizon": "30 days"})
+        self.assertEqual(loaded.budget.max_tokens, 500)
+        self.assertEqual(loaded.budget.max_seconds, 60)
+        self.assertEqual(loaded.schedule.expression, "every 1d")
+        self.assertIsNotNone(loaded.schedule.next_run_at)
+        self.assertEqual(loaded.execution_profile.runner, "shell")
+        self.assertEqual(loaded.execution_profile.runner_command, "true")
+        self.assertEqual(loaded.execution_profile.verification, ["true"])
+        self.assertEqual(loaded.execution_profile.autonomy_level, "scheduled")
+        self.assertEqual(loaded.selected_capabilities, ["shell_command"])
+        configured_events = [e for e in events if e.event_type == "mission_configured"]
+        self.assertEqual(len(configured_events), 1)
+        self.assertEqual(configured_events[0].data["changed_by"], "operator")
+        self.assertIn("budget", configured_events[0].data["changes"])
+        configured_entries = [e for e in ledger if e.event_type == "mission_configured"]
+        self.assertEqual(len(configured_entries), 1)
+        self.assertIn(configured_entries[0].id, loaded.ledger)
+
+    def test_configure_clears_schedule_with_null(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MissionStore(Path(tmpdir) / ".multi-loop")
+            orchestrator = MissionOrchestrator(store=store)
+            mission = orchestrator.create_mission("Operate", "Criteria", schedule="every 1h")
+
+            orchestrator.configure_mission(mission.id, {"schedule": None}, changed_by="operator")
+
+            self.assertIsNone(store.load_mission(mission.id).schedule)
+
+    def test_configure_rejects_protected_and_invalid_fields_atomically(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = MissionStore(Path(tmpdir) / ".multi-loop")
+            orchestrator = MissionOrchestrator(store=store)
+            mission = orchestrator.create_mission("Operate", "Original criteria")
+
+            with self.assertRaisesRegex(ValueError, "protected"):
+                orchestrator.configure_mission(
+                    mission.id, {"statement": "hijacked"}, changed_by="operator"
+                )
+            with self.assertRaisesRegex(ValueError, "protected"):
+                orchestrator.configure_mission(
+                    mission.id, {"approvals": {"paid_ads": "operator"}}, changed_by="operator"
+                )
+            with self.assertRaisesRegex(ValueError, "empty"):
+                orchestrator.configure_mission(mission.id, {}, changed_by="operator")
+            with self.assertRaisesRegex(ValueError, "changed_by"):
+                orchestrator.configure_mission(
+                    mission.id, {"budget": {"max_tokens": 10}}, changed_by="  "
+                )
+            with self.assertRaisesRegex(ValueError, "must be positive"):
+                orchestrator.configure_mission(
+                    mission.id, {"budget": {"max_iterations": 0}}, changed_by="operator"
+                )
+            with self.assertRaisesRegex(ValueError, "max_cost_usd"):
+                orchestrator.configure_mission(
+                    mission.id, {"budget": {"max_cost_usd": 5}}, changed_by="operator"
+                )
+            with self.assertRaisesRegex(ValueError, "Unknown runner"):
+                orchestrator.configure_mission(
+                    mission.id,
+                    {
+                        "success_criteria": "should not persist",
+                        "execution_profile": {"runner": "warp_drive"},
+                    },
+                    changed_by="operator",
+                )
+            with self.assertRaisesRegex(ValueError, "Unknown capabilities"):
+                orchestrator.configure_mission(
+                    mission.id,
+                    {"selected_capabilities": ["ghost_capability"]},
+                    changed_by="operator",
+                )
+            loaded = store.load_mission(mission.id)
+
+        # A rejected patch must leave the stored mission untouched, even when
+        # an earlier field in the same patch was individually valid.
+        self.assertEqual(loaded.success_criteria, "Original criteria")
+        self.assertIsNone(loaded.budget.max_iterations)
+        self.assertEqual(loaded.execution_profile.runner, "mock")
+        self.assertEqual(
+            [e for e in store.read_events(mission.id) if e.event_type == "mission_configured"],
+            [],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
