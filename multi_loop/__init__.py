@@ -18,12 +18,14 @@ from .models import (
     Mission,
     MissionSchedule,
     Outcome,
+    PermissionRecord,
     PolicyGate,
     ScheduleState,
     SideEffectClass,
     Toolset,
 )
 from .failures import FailureClassifier, RuleBasedClassifier
+from .hermes_runtime import HermesRunOutcome, HermesRuntimeAdapter
 from .index import LedgerHit, Lesson, MissionIndex
 from .leases import MissionBusy, MissionLease, acquire_mission_lease
 from .orchestrator import CandidateClaim, GenerationRunResult, MissionOrchestrator, ScheduleNotConfigured
@@ -46,6 +48,7 @@ from .onboarding import (
 )
 from .runners import (
     AgentCommandRunner,
+    HermesRunner,
     MockRunner,
     RunRequest,
     RunResult,
@@ -122,9 +125,13 @@ __all__ = [
     "OnboardingPlan",
     "OnboardingQuestion",
     "Outcome",
+    "PermissionRecord",
     "PolicyGate",
     "RuleBasedClassifier",
     "AgentCommandRunner",
+    "HermesRunOutcome",
+    "HermesRunner",
+    "HermesRuntimeAdapter",
     "MockRunner",
     "RunRequest",
     "RunResult",

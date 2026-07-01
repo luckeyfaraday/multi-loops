@@ -9,9 +9,10 @@ the orchestrator, scheduler, runners, and MCP layer share one policy surface.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Protocol
 
 from .capabilities import CapabilityRegistry
-from .models import CandidateLoop, Mission, PolicyGate, SideEffectClass
+from .models import CandidateLoop, Mission, PermissionRecord, PolicyGate, SideEffectClass
 
 # Side effects that reach outside the local mission workspace and therefore
 # require an explicit, recorded approval before a candidate may run.
@@ -118,6 +119,44 @@ def has_approved_side_effect(
         ):
             return True
     return False
+
+
+class PermissionSink(Protocol):
+    """The one storage method grant recording needs.
+
+    Duck-typed so policy stays free of a storage import (storage already
+    imports policy for path containment).
+    """
+
+    def append_permission(self, record: PermissionRecord) -> object: ...
+
+
+def record_grant(
+    store: PermissionSink,
+    mission_id: str,
+    capability: str,
+    actor: str,
+    capabilities: CapabilityRegistry,
+    *,
+    note: str = "",
+) -> None:
+    """Append one granted-authority record to the mission's permission ledger.
+
+    Every path that grants side-effect authority (explicit approval, mission
+    intake, capability setup) funnels through here so grants are recorded
+    identically no matter where they originate.
+    """
+    card = capabilities.get(capability)
+    store.append_permission(
+        PermissionRecord(
+            mission_id=mission_id,
+            action="granted",
+            capability=capability,
+            actor=actor,
+            side_effect_class=card.side_effect_class if card else None,
+            note=note,
+        )
+    )
 
 
 _DENY_SIDE_EFFECTS = (

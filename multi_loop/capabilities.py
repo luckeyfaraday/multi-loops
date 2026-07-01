@@ -260,6 +260,29 @@ def default_capabilities() -> CapabilityRegistry:
     )
     registry.register(
         Capability(
+            name="hermes_runner",
+            description=(
+                "Run unattended candidate work through the installed Hermes CLI, one "
+                "agent per subprocess (Stage 1 bridge)."
+            ),
+            toolset_or_backend="hermes_cli",
+            side_effect_class=SideEffectClass.LOCAL_WRITE,
+            inputs=["candidate prompt", "workspace", "toolset grant"],
+            outputs=["agent response", "artifacts", "execution transcript"],
+            artifact_types=["markdown", "files"],
+            availability_check="requires the hermes CLI on PATH with a configured model provider",
+            cost_class="user_configured_provider",
+            latency_class="medium",
+            verification="Require candidate evidence and configured verification commands.",
+            tags=["hermes", "agent", "scheduled", "runner", "oneshot", "subprocess"],
+            runner="hermes",
+            runner_command="hermes",
+            setup_hint="Install Hermes and run 'hermes setup' to configure a model provider.",
+        ),
+        check=lambda: shutil.which("hermes") is not None,
+    )
+    registry.register(
+        Capability(
             name="github_read",
             description="Inspect GitHub repositories, pull requests, diffs, checks, and metadata with gh.",
             toolset_or_backend="gh_cli",

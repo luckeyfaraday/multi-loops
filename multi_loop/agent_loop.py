@@ -12,6 +12,7 @@ from .main_agent import MainLoopService
 from .models import to_dict
 from .orchestrator import MissionOrchestrator
 from .providers import ProviderClient, ProviderReply, ProviderToolCall
+from .reports import render_mission_report
 
 
 # Minimum length for a user confirmation quote. A substring match against the
@@ -395,6 +396,13 @@ class MainLoopAgent:
                 approved_by="cli_user",
             )
             return {"mission_id": mission.id, "approvals": mission.approvals}
+        if call.name == "generation_run":
+            result = self.orchestrator.run_generation(str(args["mission_id"]))
+            return {"result": to_dict(result)}
+        if call.name == "mission_report":
+            mission = self.service.missions.load_mission(str(args["mission_id"]))
+            permissions = self.service.missions.read_permissions(mission.id)
+            return {"report": render_mission_report(mission, permissions)}
         if call.name == "generation_prepare":
             generation = self.orchestrator.prepare_generation(str(args["mission_id"]))
             return {"generation": to_dict(generation)}
@@ -649,6 +657,20 @@ TOOL_SCHEMAS = [
             "confirmation_quote": {"type": "string"},
         },
         ["mission_id", "capability", "confirmation_quote"],
+    ),
+    _function(
+        "generation_run",
+        "Run one full generation now: plan candidates, execute them through the "
+        "mission's configured runner, score, and synthesize. Blocks until done.",
+        {"mission_id": {"type": "string"}},
+        ["mission_id"],
+    ),
+    _function(
+        "mission_report",
+        "Render the user-facing executive report (progress, evidence, authority, "
+        "attention items, next steps). Prefer this over raw status when updating the user.",
+        {"mission_id": {"type": "string"}},
+        ["mission_id"],
     ),
     _function("generation_prepare", "Plan a generation without executing it.", {"mission_id": {"type": "string"}}, ["mission_id"]),
     _function(

@@ -26,7 +26,7 @@ from .models import (
     utc_now_iso,
 )
 from .orchestrator import MissionOrchestrator
-from .policy import APPROVAL_REQUIRED
+from .policy import APPROVAL_REQUIRED, record_grant
 from .readiness import capability_readiness_items, mission_readiness_report
 from .schedule_util import parse_schedule
 from .storage import MissionStore
@@ -500,6 +500,14 @@ class MainLoopService:
                 mission.selected_capabilities.append(name)
         for approval in plan["side_effect_approvals"]:
             mission.approvals[approval["capability"]] = approved_by.strip()
+            record_grant(
+                self.missions,
+                mission.id,
+                approval["capability"],
+                approved_by.strip(),
+                self.capabilities,
+                note="granted via mission capability setup",
+            )
         if plan["changes"]["execution_runner"]:
             mission.execution_profile.runner = plan["changes"]["execution_runner"]
             mission.execution_profile.runner_command = plan["changes"]["runner_command"]

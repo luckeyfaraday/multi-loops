@@ -26,6 +26,7 @@ from .models import (
     Mission,
     MissionSchedule,
     Outcome,
+    PermissionRecord,
     ScheduleState,
     from_dict,
     new_id,
@@ -39,7 +40,14 @@ from .planning import (
     HeuristicPortfolioPlanner,
     MAX_PITFALLS,
 )
-from .policy import APPROVAL_REQUIRED, prepare_candidate, resolve_within, side_effect_directive
+from .policy import (
+    APPROVAL_REQUIRED,
+    prepare_candidate,
+    record_grant,
+    resolve_within,
+    side_effect_directive,
+)
+from .reports import write_generation_report
 from .runners import RunRequest, RunResult, RunnerRegistry, default_runner_registry, run_result_to_dict
 from .schedule_util import compute_next_run, initialize_schedule
 from .storage import MissionNotFound, MissionStore
@@ -150,6 +158,15 @@ class MissionOrchestrator:
             "mission_created",
             {"statement": statement, "clarifications": mission.clarifications},
         )
+        for capability, approved_by in mission.approvals.items():
+            record_grant(
+                self.store,
+                mission.id,
+                capability,
+                approved_by,
+                self.capabilities,
+                note="granted during mission intake",
+            )
         entry = LedgerEntry(
             mission_id=mission.id,
             event_type="mission_created",
@@ -171,7 +188,6 @@ class MissionOrchestrator:
             raise ValueError("Approver identity is required.")
         mission = self.store.load_mission(mission_id)
         mission.approvals[capability] = approved_by.strip()
-        self.store.save_mission(mission)
         self._append_event(
             mission,
             "capability_approved",
@@ -183,6 +199,45 @@ class MissionOrchestrator:
             summary=f"Approved capability {capability} for {approved_by.strip()}",
         )
         self._append_ledger(mission, entry)
+        record_grant(
+            self.store, mission.id, capability, approved_by.strip(), self.capabilities
+        )
+        self.store.save_mission(mission)
+        return mission
+
+    def revoke_capability(self, mission_id: str, capability: str, *, revoked_by: str) -> Mission:
+        """Withdraw a previously granted side-effect approval.
+
+        Revocation works even when the capability card has since disappeared:
+        an approval the user wants gone must always be removable.
+        """
+        if not revoked_by.strip():
+            raise ValueError("Revoker identity is required.")
+        mission = self.store.load_mission(mission_id)
+        if capability not in mission.approvals:
+            raise ValueError(f"Capability has no recorded approval: {capability}")
+        del mission.approvals[capability]
+        self._append_event(
+            mission,
+            "capability_revoked",
+            {"capability": capability, "revoked_by": revoked_by.strip()},
+        )
+        entry = LedgerEntry(
+            mission_id=mission.id,
+            event_type="capability_revoked",
+            summary=f"Revoked capability {capability} by {revoked_by.strip()}",
+        )
+        self._append_ledger(mission, entry)
+        card = self.capabilities.get(capability)
+        self.store.append_permission(
+            PermissionRecord(
+                mission_id=mission.id,
+                action="revoked",
+                capability=capability,
+                actor=revoked_by.strip(),
+                side_effect_class=card.side_effect_class if card else None,
+            )
+        )
         self.store.save_mission(mission)
         return mission
 
@@ -707,6 +762,7 @@ class MissionOrchestrator:
             generation.state = GenerationState.COMPLETED
             synthesis_path = f"artifacts/generation-{generation_index}/synthesis.md"
             self.store.write_artifact(mission.id, synthesis_path, generation.synthesis)
+            report_path = write_generation_report(self.store, mission, generation_index)
             self._append_ledger(
                 mission,
                 LedgerEntry(
@@ -725,6 +781,7 @@ class MissionOrchestrator:
                 {
                     "selected_loop_ids": generation.selected_lineage,
                     "synthesis_path": synthesis_path,
+                    "report_path": report_path,
                     "mutations": generation.mutations,
                     "blocked_candidates": _blocked_candidate_ids(generation),
                 },
@@ -880,6 +937,7 @@ class MissionOrchestrator:
         generation.state = GenerationState.COMPLETED
         synthesis_path = f"artifacts/generation-{generation_index}/synthesis.md"
         self.store.write_artifact(mission.id, synthesis_path, generation.synthesis)
+        report_path = write_generation_report(self.store, mission, generation_index)
 
         synthesis_entry = LedgerEntry(
             mission_id=mission.id,
@@ -898,6 +956,7 @@ class MissionOrchestrator:
             {
                 "selected_loop_ids": generation.selected_lineage,
                 "synthesis_path": synthesis_path,
+                "report_path": report_path,
                 "mutations": generation.mutations,
                 "blocked_candidates": blocked_candidates,
             },
@@ -1005,7 +1064,37 @@ class MissionOrchestrator:
             ),
             pitfalls=self._pitfalls_for(mission, candidate),
         )
+        self._record_permission_uses(mission, generation_index, candidate)
         return runner.run(request)
+
+    def _record_permission_uses(
+        self,
+        mission: Mission,
+        generation_index: int,
+        candidate: CandidateLoop,
+    ) -> None:
+        """Record which granted authority a run is about to exercise.
+
+        Written per run attempt, before the runner starts, so the permission
+        ledger shows the authority as exercised even when the run crashes.
+        """
+        for ref in candidate.required_capabilities:
+            card = self.capabilities.get(ref.name)
+            approved_by = mission.approvals.get(ref.name)
+            if card is None or card.side_effect_class not in APPROVAL_REQUIRED or not approved_by:
+                continue
+            self.store.append_permission(
+                PermissionRecord(
+                    mission_id=mission.id,
+                    action="used",
+                    capability=ref.name,
+                    actor=candidate.id,
+                    side_effect_class=card.side_effect_class,
+                    generation_index=generation_index,
+                    candidate_loop_id=candidate.id,
+                    note=f"approved by {approved_by}; run via {candidate.runner}",
+                )
+            )
 
     def _refresh_lessons(self) -> None:
         """Rebuild the derived lessons index from JSON before a generation reads it."""

@@ -8,6 +8,7 @@ operator can call it repeatedly while working through gaps with the user.
 
 from __future__ import annotations
 
+import shutil
 from typing import Any
 
 from .capabilities import CapabilityRegistry
@@ -15,7 +16,7 @@ from .models import Mission
 from .policy import APPROVAL_REQUIRED
 
 # The runners a schedule can fire without an interactive session attached.
-UNATTENDED_RUNNERS = frozenset({"agent_command", "shell"})
+UNATTENDED_RUNNERS = frozenset({"agent_command", "shell", "hermes"})
 
 
 def capability_readiness_items(
@@ -97,7 +98,14 @@ def mission_readiness_report(
                 "scheduled mission has no unattended runner "
                 f"(runner is {profile.runner!r}; needs one of {sorted(UNATTENDED_RUNNERS)})"
             )
-        if not profile.runner_command:
+        if profile.runner == "hermes":
+            # The hermes runner builds its own subprocess command and never
+            # reads runner_command; it only needs the executable on PATH.
+            if shutil.which("hermes") is None:
+                blockers.append(
+                    "scheduled mission runner executable not found on PATH: hermes"
+                )
+        elif not profile.runner_command:
             blockers.append("scheduled mission has no executable runner command")
         if mission.schedule.state.value != "scheduled":
             notices.append(

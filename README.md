@@ -597,7 +597,16 @@ command on stdin, so a real CLI agent works each candidate loop:
 python3 -m multi_loop run <mission-id> --runner-command "claude -p"
 # or run a deterministic shell command per candidate:
 python3 -m multi_loop run <mission-id> --runner shell --runner-command "pytest -q"
+# or run each candidate through the installed Hermes CLI (Stage 1 subprocess bridge):
+python3 -m multi_loop run <mission-id> --runner hermes
 ```
+
+The `hermes` runner needs no command: it launches one `hermes chat -q ... -Q`
+subprocess per candidate with a bounded toolset grant (default `web,file`),
+prepends the mission's side-effect directive to the prompt, and collects
+evidence from the candidate's artifact directory — the files the agent actually
+wrote, not what it claims. Per-candidate `runner_config` accepts `toolsets`,
+`model`, and `executable` overrides.
 
 Real runs are governed by two safety rails:
 
@@ -612,6 +621,16 @@ Real runs are governed by two safety rails:
   that did the work but whose runner was killed (e.g. timed out before reporting), and
   fails one that exited cleanly but cannot prove its claimed work, so fitness reflects
   evidence rather than the worker's self-report.
+
+Every grant, use, and revocation of side-effect authority is also written to a
+durable per-mission permission ledger (`permissions.jsonl`), inspectable at any
+time — this is what keeps hands-off operation from becoming hidden operation:
+
+```bash
+python3 -m multi_loop approve <mission-id> browser_automation --by user
+python3 -m multi_loop revoke <mission-id> browser_automation --by user
+python3 -m multi_loop permissions <mission-id>
+```
 
 ```bash
 # after approving the candidate's specific GitHub write capability, verify the action:
@@ -653,7 +672,27 @@ python3 -m multi_loop pause <mission-id> --reason "holding for review"
 python3 -m multi_loop resume <mission-id>
 python3 -m multi_loop trigger <mission-id>   # mark due now
 python3 -m multi_loop tick                    # run all missions that are due
+python3 -m multi_loop serve --interval 60     # keep ticking until interrupted
 ```
+
+`serve` is the unattended continuation path: leave it running (tmux, systemd,
+cron wrapper) and every scheduled mission advances one bounded generation per
+due tick with no session attached.
+
+### Executive Report
+
+After every generation the orchestrator writes a user-facing report to
+`reports/generation-<n>.md` inside the mission directory, and the same report
+can be rendered on demand from current state:
+
+```bash
+python3 -m multi_loop report <mission-id>
+```
+
+It summarizes progress, evidence paths, granted/used authority, items that
+need the user's decision (policy-blocked candidates, failures, schedule
+errors), and what happens next — rendered deterministically from mission
+state, no LLM involved.
 
 The legacy deterministic `onboard` command remains available for scripts. The
 interactive path is the main-loop agent:
@@ -731,6 +770,8 @@ The server exposes the mission runtime directly:
   plan/apply pair for an already-created mission. None of these embed credentials.
 - `create_mission`, `mission_status`, `list_missions`, and `approve_capability`
   manage persisted mission state.
+- `mission_report` renders the user-facing executive report for a mission —
+  what the host agent should show the user instead of raw status.
 - `mission_readiness` is the operator's prep instrument: for a draft session or
   a created mission it classifies every required capability (`ready`,
   `needs_setup`, `needs_approval`, `unknown`) with concrete fixes, checks that
@@ -769,6 +810,25 @@ The server exposes the mission runtime directly:
 Detached MCP run logs live under `.multi-loop/mcp-runs/<run-id>/` with
 `events.jsonl`, `status.json`, and `result.json`. Mission state remains under
 `.multi-loop/runs/<mission-id>/`.
+
+### Codex As The Operator
+
+With the MCP server registered in Codex, the Codex CLI (ChatGPT OAuth) is the
+executive-director agent: you state the mission in a codex chat, and it drives
+draft → confirm → capability setup → run → report through the MCP tools while
+multi-loop keeps ownership of policy, ledgers, and evidence.
+
+```toml
+# ~/.codex/config.toml
+[mcp_servers.multi-loop]
+command = "/path/to/multi-loop/.venv/bin/multi-loop-mcp"
+default_tools_approval_mode = "approve"   # multi-loop's own policy gates side effects
+```
+
+Auto-approving the MCP call layer is safe because the harness, not the host
+agent, enforces the side-effect policy: outward actions still require a
+recorded `approve_capability` grant, and every grant/use/revocation lands in
+the permission ledger.
 
 ## Program Files
 

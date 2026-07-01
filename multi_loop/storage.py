@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import TypeVar
 
-from .models import Event, LedgerEntry, Mission, from_dict, to_dict, utc_now_iso
+from .models import Event, LedgerEntry, Mission, PermissionRecord, from_dict, to_dict, utc_now_iso
 from .policy import resolve_within
+
+_R = TypeVar("_R")
 
 
 class MissionNotFound(FileNotFoundError):
@@ -61,46 +64,43 @@ class MissionStore:
         return missions
 
     def append_ledger(self, entry: LedgerEntry) -> Path:
-        mission_dir = self.mission_dir(entry.mission_id)
-        mission_dir.mkdir(parents=True, exist_ok=True)
-        path = mission_dir / "ledger.jsonl"
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(to_dict(entry), ensure_ascii=False, sort_keys=True))
-            handle.write("\n")
-        return path
+        return self._append_jsonl(entry.mission_id, "ledger.jsonl", entry)
 
     def read_ledger(self, mission_id: str) -> list[LedgerEntry]:
-        path = self.mission_dir(mission_id) / "ledger.jsonl"
-        if not path.exists():
-            return []
-        entries: list[LedgerEntry] = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                stripped = line.strip()
-                if stripped:
-                    entries.append(from_dict(LedgerEntry, json.loads(stripped)))
-        return entries
+        return self._read_jsonl(mission_id, "ledger.jsonl", LedgerEntry)
 
     def append_event(self, event: Event) -> Path:
-        mission_dir = self.mission_dir(event.mission_id)
+        return self._append_jsonl(event.mission_id, "events.jsonl", event)
+
+    def read_events(self, mission_id: str) -> list[Event]:
+        return self._read_jsonl(mission_id, "events.jsonl", Event)
+
+    def append_permission(self, record: PermissionRecord) -> Path:
+        return self._append_jsonl(record.mission_id, "permissions.jsonl", record)
+
+    def read_permissions(self, mission_id: str) -> list[PermissionRecord]:
+        return self._read_jsonl(mission_id, "permissions.jsonl", PermissionRecord)
+
+    def _append_jsonl(self, mission_id: str, filename: str, record: object) -> Path:
+        mission_dir = self.mission_dir(mission_id)
         mission_dir.mkdir(parents=True, exist_ok=True)
-        path = mission_dir / "events.jsonl"
+        path = mission_dir / filename
         with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(to_dict(event), ensure_ascii=False, sort_keys=True))
+            handle.write(json.dumps(to_dict(record), ensure_ascii=False, sort_keys=True))
             handle.write("\n")
         return path
 
-    def read_events(self, mission_id: str) -> list[Event]:
-        path = self.mission_dir(mission_id) / "events.jsonl"
+    def _read_jsonl(self, mission_id: str, filename: str, cls: type[_R]) -> list[_R]:
+        path = self.mission_dir(mission_id) / filename
         if not path.exists():
             return []
-        events: list[Event] = []
+        records: list[_R] = []
         with path.open("r", encoding="utf-8") as handle:
             for line in handle:
                 stripped = line.strip()
                 if stripped:
-                    events.append(from_dict(Event, json.loads(stripped)))
-        return events
+                    records.append(from_dict(cls, json.loads(stripped)))
+        return records
 
     def write_artifact(self, mission_id: str, relative_path: str, content: str) -> Path:
         path = resolve_within(self.mission_dir(mission_id), relative_path)

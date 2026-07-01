@@ -20,6 +20,7 @@ from .mcp_runs import MANAGER, mcp_runs_dir
 from .models import to_dict
 from .onboarding import OnboardingEngine, format_capability_brief
 from .orchestrator import MissionOrchestrator
+from .reports import render_mission_report
 from .runners import default_runner_registry
 from .scheduler import MissionScheduler
 from .storage import MissionNotFound, MissionStore
@@ -436,6 +437,18 @@ def create_mission_impl(
 def mission_status_impl(mission_id: str, *, root: str = DEFAULT_ROOT) -> dict[str, Any]:
     try:
         return _mission_payload(_store(root), mission_id)
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def mission_report_impl(mission_id: str, *, root: str = DEFAULT_ROOT) -> dict[str, Any]:
+    try:
+        store = _store(root)
+        mission = store.load_mission(mission_id)
+        return {
+            "mission_id": mission_id,
+            "report": render_mission_report(mission, store.read_permissions(mission_id)),
+        }
     except Exception as exc:  # noqa: BLE001
         return _error(exc)
 
@@ -1326,6 +1339,16 @@ def build_server():
     def mission_status(mission_id: str, root: str = DEFAULT_ROOT) -> dict[str, Any]:
         """Return mission state plus ledger/event counts."""
         return mission_status_impl(mission_id, root=root)
+
+    @mcp.tool()
+    def mission_report(mission_id: str, root: str = DEFAULT_ROOT) -> dict[str, Any]:
+        """Render the user-facing executive report for a mission.
+
+        Show this to the user instead of raw status when they ask how the
+        mission is going: it covers progress, evidence, authority, items
+        needing their decision, and what happens next.
+        """
+        return mission_report_impl(mission_id, root=root)
 
     @mcp.tool()
     def list_missions(root: str = DEFAULT_ROOT) -> dict[str, Any]:
