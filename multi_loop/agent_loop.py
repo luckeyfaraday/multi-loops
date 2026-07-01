@@ -49,7 +49,7 @@ class MainLoopAgent:
         self.context_limit = context_limit
         self.compaction_threshold = compaction_threshold
         self.service = MainLoopService(self.root)
-        self.orchestrator = MissionOrchestrator(store=self.service.missions)
+        self._refresh_orchestrator()
 
     def turn(self, session_id: str, user_message: str) -> AgentTurnResult:
         if not user_message.strip():
@@ -306,7 +306,7 @@ class MainLoopAgent:
         if call.name == "capability_setup_apply":
             quote = str(args.get("confirmation_quote") or "").strip()
             self._require_user_quote(session_id, quote)
-            return _tool_view(
+            result = _tool_view(
                 self.service.capability_setup_apply(
                     session_id,
                     args.get("capability_names") or [],
@@ -314,10 +314,12 @@ class MainLoopAgent:
                     approved_by="cli_user",
                 )
             )
+            self._refresh_orchestrator()
+            return result
         if call.name == "capability_add_command":
             quote = str(args.get("confirmation_quote") or "").strip()
             self._require_user_quote(session_id, quote)
-            return self.service.add_command_capability(
+            result = self.service.add_command_capability(
                 session_id,
                 name=str(args["name"]),
                 description=str(args["description"]),
@@ -327,6 +329,8 @@ class MainLoopAgent:
                 runner=str(args.get("runner") or "agent_command"),
                 approved_by="cli_user",
             )
+            self._refresh_orchestrator()
+            return result
         if call.name == "mission_capability_setup_plan":
             return self.service.mission_capability_setup_plan(
                 str(args["mission_id"]), args.get("capability_names") or []
@@ -334,12 +338,14 @@ class MainLoopAgent:
         if call.name == "mission_capability_setup_apply":
             quote = str(args.get("confirmation_quote") or "").strip()
             self._require_user_quote(session_id, quote)
-            return self.service.mission_capability_setup_apply(
+            result = self.service.mission_capability_setup_apply(
                 str(args["mission_id"]),
                 args.get("capability_names") or [],
                 confirmation_quote=quote,
                 approved_by="cli_user",
             )
+            self._refresh_orchestrator()
+            return result
         if call.name == "mission_status":
             mission = self.service.missions.load_mission(str(args["mission_id"]))
             return {"mission": to_dict(mission)}
@@ -407,6 +413,12 @@ class MainLoopAgent:
             )
             return {"result": to_dict(result)}
         raise ValueError(f"Unknown main-loop tool: {call.name}")
+
+    def _refresh_orchestrator(self) -> None:
+        self.orchestrator = MissionOrchestrator(
+            store=self.service.missions,
+            capabilities=self.service.capabilities,
+        )
 
     def _require_user_quote(
         self,

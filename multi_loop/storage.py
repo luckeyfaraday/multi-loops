@@ -26,7 +26,7 @@ class MissionStore:
         self.runs_dir = self.root / "runs"
 
     def mission_dir(self, mission_id: str) -> Path:
-        return self.runs_dir / mission_id
+        return resolve_within(self.runs_dir, _safe_mission_id(mission_id))
 
     def create_mission(self, mission: Mission) -> Path:
         mission_dir = self.mission_dir(mission.id)
@@ -123,3 +123,18 @@ def _atomic_write_json(path: Path, data: dict) -> None:
         handle.flush()
         os.fsync(handle.fileno())  # durably persist before the atomic replace
     tmp_path.replace(path)
+
+
+def _safe_mission_id(mission_id: str) -> str:
+    """Return a mission id that is safe to use as one run-directory segment."""
+    clean = str(mission_id)
+    if (
+        not clean
+        or clean != clean.strip()
+        or clean in {".", ".."}
+        or "/" in clean
+        or "\\" in clean
+        or Path(clean).name != clean
+    ):
+        raise ValueError("Mission id must be a single safe path segment.")
+    return clean

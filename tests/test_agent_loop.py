@@ -133,6 +133,82 @@ class MainLoopAgentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "substantive span"):
                 agent._dispatch_tool(session_id, call)
 
+    def test_added_command_capability_is_immediately_usable_by_cli_agent(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / ".multi-loop"
+            service = MainLoopService(root)
+            session_id = service.open(
+                interface="cli",
+                provider_id="local",
+                mission_seed="Use a custom command",
+            )["session"]["id"]
+            service.update_draft(
+                session_id,
+                {"success_criteria": "Produce command evidence"},
+            )
+            service.sessions.append_message(
+                session_id,
+                "user",
+                "Yes, add this command tool.",
+            )
+            agent = MainLoopAgent(root, FakeProvider([]))
+            agent._dispatch_tool(
+                session_id,
+                ProviderToolCall(
+                    id="add-custom",
+                    name="capability_add_command",
+                    arguments={
+                        "name": "custom_tool",
+                        "description": "Run a user-approved command.",
+                        "command": "true",
+                        "side_effect_class": "read_only",
+                        "runner": "shell",
+                        "confirmation_quote": "add this command tool",
+                    },
+                ),
+            )
+            service.sessions.append_message(session_id, "user", "Yes, create this mission.")
+            confirmed = agent._dispatch_tool(
+                session_id,
+                ProviderToolCall(
+                    id="confirm-custom",
+                    name="confirm_mission",
+                    arguments={"confirmation_quote": "create this mission"},
+                ),
+            )
+
+            prepared = agent._dispatch_tool(
+                session_id,
+                ProviderToolCall(
+                    id="prepare-custom",
+                    name="generation_prepare",
+                    arguments={"mission_id": confirmed["mission"]["id"]},
+                ),
+            )
+            custom_candidate = next(
+                candidate
+                for candidate in prepared["generation"]["candidate_loops"]
+                if any(
+                    ref["name"] == "custom_tool"
+                    for ref in candidate["required_capabilities"]
+                )
+            )
+            claim = agent._dispatch_tool(
+                session_id,
+                ProviderToolCall(
+                    id="claim-custom",
+                    name="candidate_claim",
+                    arguments={
+                        "mission_id": confirmed["mission"]["id"],
+                        "generation_index": prepared["generation"]["index"],
+                        "candidate_id": custom_candidate["id"],
+                    },
+                ),
+            )
+
+        self.assertFalse(claim["claim"]["blocked"])
+        self.assertEqual(claim["claim"]["candidate"]["runner"], "shell")
+
     def test_long_session_compacts_without_deleting_history(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / ".multi-loop"

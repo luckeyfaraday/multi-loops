@@ -39,3 +39,4 @@ include = ["multi_loop*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]

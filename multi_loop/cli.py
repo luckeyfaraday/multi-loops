@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from .agent_loop import MainLoopAgent
-from .capabilities import default_capabilities
+from .capability_config import configured_capabilities
 from .index import MissionIndex
 from .main_agent import MainLoopService
 from .models import to_dict
@@ -399,7 +399,7 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
         return 0
 
     if args.command == "capabilities":
-        registry = default_capabilities()
+        registry = configured_capabilities(args.root)
         if args.describe:
             if registry.get(args.describe) is None:
                 print(f"Unknown capability: {args.describe}", file=sys.stderr)
@@ -422,7 +422,7 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
         return 0
 
     if args.command == "toolsets":
-        registry = default_capabilities()
+        registry = configured_capabilities(args.root)
         if args.resolve:
             names = args.resolve.replace(",", " ").split()
             try:

@@ -68,6 +68,21 @@ class MissionStoreTests(unittest.TestCase):
         self.assertEqual(events[0].event_type, "candidate_completed")
         self.assertTrue(events[0].data["ok"])
 
+    def test_mission_id_must_not_escape_runs_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / ".multi-loop"
+            store = MissionStore(root)
+            (root / "runs").mkdir(parents=True)
+
+            with self.assertRaisesRegex(ValueError, "single safe path segment"):
+                store.load_mission("../../outside")
+            with self.assertRaisesRegex(ValueError, "single safe path segment"):
+                store.create_mission(
+                    Mission(id="../outside", statement="x", success_criteria="y")
+                )
+
+            self.assertFalse((Path(tmpdir) / "outside").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
