@@ -214,6 +214,10 @@ def main(argv: list[str] | None = None) -> int:
         "--interval", type=float, default=60.0, help="Seconds between ticks (default 60)"
     )
 
+    subparsers.add_parser(
+        "tui", help="Open the mission console (dashboard, operator chat, settings)"
+    )
+
     args = parser.parse_args(argv)
     store = MissionStore(args.root)
 
@@ -521,6 +525,17 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
 
     if args.command == "serve":
         return _serve(store, interval=args.interval)
+
+    if args.command == "tui":
+        try:
+            from .tui.app import run_tui
+        except ImportError:
+            print(
+                "The mission console needs the optional TUI extra: pip install -e '.[tui]'",
+                file=sys.stderr,
+            )
+            return 1
+        return run_tui(args.root)
 
     print(f"Unknown command: {args.command}", file=sys.stderr)
     return 2

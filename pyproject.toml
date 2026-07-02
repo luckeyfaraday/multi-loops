@@ -24,6 +24,7 @@ dependencies = []
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.0", "croniter>=2.0"]
+tui = ["textual>=0.80"]
 
 [project.urls]
 Homepage = "https://github.com/luckeyfaraday/multi-loops"

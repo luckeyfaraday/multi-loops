@@ -811,6 +811,32 @@ Detached MCP run logs live under `.multi-loop/mcp-runs/<run-id>/` with
 `events.jsonl`, `status.json`, and `result.json`. Mission state remains under
 `.multi-loop/runs/<mission-id>/`.
 
+## Mission Console (TUI)
+
+`multi-loop tui` opens multi-loop's own agent environment — the product surface,
+not a third-party chat pointed at files:
+
+- **Dashboard** — every mission with generation progress, schedule state, and
+  next-run time; selecting a mission renders its executive report inline.
+- **Chat** — the operator room. The app assembles a fresh state snapshot every
+  turn and feeds it to the engine (codex headless with the multi-loop MCP
+  tools), so the operator already knows the mission state; you never explain or
+  point it anywhere. `/approve <capability>` and `/revoke <capability>` are
+  handled locally and written straight to the permission ledger.
+- **Settings** — schedule, runner, and authority grants per mission.
+
+A serve loop ticks scheduled missions inside the app: when a generation
+finishes, its executive report is pushed into the chat feed automatically.
+
+```bash
+pip install -e ".[tui]"
+multi-loop tui
+```
+
+The engine is deliberately swappable: the TUI owns presentation and context
+assembly, the harness owns policy and durability, and codex is just inference
+plus tools behind the chat pane.
+
 ### Codex As The Operator
 
 With the MCP server registered in Codex, the Codex CLI (ChatGPT OAuth) is the
