@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -23,7 +24,11 @@ from .storage import MissionNotFound, MissionStore
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="multi-loop")
-    parser.add_argument("--root", default=".multi-loop", help="Storage root directory")
+    parser.add_argument(
+        "--root",
+        default=os.environ.get("MULTI_LOOP_ROOT", ".multi-loop"),
+        help="Storage root directory (env: MULTI_LOOP_ROOT)",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     create_parser = subparsers.add_parser("create", help="Create a mission")

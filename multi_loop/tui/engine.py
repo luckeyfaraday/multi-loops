@@ -70,14 +70,17 @@ class CodexOperatorEngine:
         sections.append(user_message)
         prompt = "\n\n".join(sections)
 
+        # `codex exec resume` accepts only a subset of `codex exec` flags (no
+        # --cd), so the working directory is set on the subprocess instead.
         command = [self.executable, "exec"]
         if self.thread_id:
             command += ["resume", self.thread_id]
-        command += ["--json", "--skip-git-repo-check", "--cd", str(self.root), prompt]
+        command += ["--json", "--skip-git-repo-check", prompt]
 
         try:
             completed = subprocess.run(
                 command,
+                cwd=str(self.root),
                 text=True,
                 capture_output=True,
                 timeout=self.timeout_seconds,
@@ -96,10 +99,9 @@ class CodexOperatorEngine:
 
         text, usage = self._parse_events(completed.stdout)
         if completed.returncode != 0 and not text:
-            detail = completed.stderr.strip().splitlines()
             return OperatorReply(
                 text="", thread_id=self.thread_id, ok=False,
-                error=detail[-1] if detail else f"codex exited {completed.returncode}",
+                error=_stderr_reason(completed.stderr, completed.returncode),
             )
         return OperatorReply(text=text, thread_id=self.thread_id, ok=True, usage=usage)
 
@@ -123,3 +125,12 @@ class CodexOperatorEngine:
             elif event.get("type") == "turn.completed":
                 usage = event.get("usage") or {}
         return "\n\n".join(messages), usage
+
+
+def _stderr_reason(stderr: str, returncode: int | None) -> str:
+    """Pick the informative line out of CLI stderr (clap buries it above usage)."""
+    lines = [line.strip() for line in stderr.strip().splitlines() if line.strip()]
+    for line in lines:
+        if "error" in line.lower():
+            return line
+    return lines[0] if lines else f"codex exited {returncode}"
