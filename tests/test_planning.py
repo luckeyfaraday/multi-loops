@@ -2,7 +2,7 @@ import unittest
 
 from multi_loop import HeuristicPortfolioPlanner, Mission, prepare_candidate
 from multi_loop.capabilities import default_capabilities
-from multi_loop.models import CandidateState, Generation
+from multi_loop.models import CandidateState, ExecutionProfile, Generation
 
 
 class PlanningTests(unittest.TestCase):
@@ -41,6 +41,19 @@ class PlanningTests(unittest.TestCase):
         self.assertIn("crossover", roles)
         self.assertIn("synthesis_worker", roles)
         self.assertGreaterEqual(len(second.mutations), 3)
+
+    def test_hermes_execution_profile_overrides_candidate_runner(self):
+        mission = Mission(
+            statement="Grow the project",
+            success_criteria="More stars",
+            execution_profile=ExecutionProfile(runner="hermes"),
+        )
+
+        plan = HeuristicPortfolioPlanner().plan(mission, 0)
+
+        self.assertTrue(plan.candidates)
+        for candidate in plan.candidates:
+            self.assertEqual(candidate.runner, "hermes")
 
     def test_unavailable_required_capability_blocks_candidate(self):
         mission = Mission(statement="Start a company", success_criteria="Launch")

@@ -276,6 +276,29 @@ class LedgerEntry:
 
 
 @dataclass(slots=True)
+class PermissionRecord:
+    """One entry in a mission's durable permission ledger.
+
+    The ledger answers "what authority exists and how has it been exercised":
+    grants and revocations come from the principal, and a use is recorded when
+    a run actually exercises an approved side-effecting capability. This is
+    the inspectable trail that keeps hands-off operation from becoming hidden
+    operation.
+    """
+
+    mission_id: str
+    action: str  # "granted" | "revoked" | "used"
+    capability: str
+    actor: str  # approver/revoker identity; the candidate loop id for "used"
+    id: str = field(default_factory=lambda: new_id("perm"))
+    side_effect_class: SideEffectClass | None = None
+    generation_index: int | None = None
+    candidate_loop_id: str | None = None
+    note: str = ""
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
 class Event:
     mission_id: str
     event_type: str

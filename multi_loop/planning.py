@@ -228,7 +228,7 @@ def _finalize_candidates(
                 candidate.runner_config["command"] = configured_card.runner_command
         if candidate.runner == "mock" and default_runner != "mock":
             candidate.runner = default_runner
-        if mission.execution_profile.runner in {"agent_command", "shell"}:
+        if mission.execution_profile.runner in {"agent_command", "shell", "hermes"}:
             candidate.runner = mission.execution_profile.runner
         if mission.execution_profile.runner_command:
             candidate.runner_config["command"] = mission.execution_profile.runner_command

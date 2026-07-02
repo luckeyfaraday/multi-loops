@@ -20,6 +20,7 @@ from .mcp_runs import MANAGER, mcp_runs_dir
 from .models import to_dict
 from .onboarding import OnboardingEngine, format_capability_brief
 from .orchestrator import MissionOrchestrator
+from .reports import render_mission_report
 from .runners import default_runner_registry
 from .scheduler import MissionScheduler
 from .storage import MissionNotFound, MissionStore
@@ -301,6 +302,74 @@ def mission_capability_setup_apply_impl(
         return _error(exc)
 
 
+def mission_readiness_impl(
+    *,
+    root: str = DEFAULT_ROOT,
+    mission_id: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Report capability gaps and blockers for a mission or a draft session."""
+    try:
+        service = MainLoopService(root)
+        if mission_id:
+            return service.mission_readiness(mission_id)
+        if session_id:
+            return service.readiness(session_id)
+        return {"error": "Provide mission_id or session_id.", "summary": "failed: no target"}
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def mission_configure_impl(
+    mission_id: str,
+    patch: dict[str, Any],
+    *,
+    root: str = DEFAULT_ROOT,
+    changed_by: str = "operator",
+) -> dict[str, Any]:
+    try:
+        mission = MissionOrchestrator(store=_store(root)).configure_mission(
+            mission_id, patch, changed_by=changed_by
+        )
+        return {
+            "mission": to_dict(mission),
+            "summary": "mission configuration updated: " + ", ".join(sorted(patch)),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def mission_pause_impl(
+    mission_id: str,
+    *,
+    root: str = DEFAULT_ROOT,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    try:
+        mission = MissionOrchestrator(store=_store(root)).pause_schedule(
+            mission_id, reason=reason
+        )
+        return {"mission_id": mission.id, "schedule": to_dict(mission.schedule)}
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def mission_resume_impl(mission_id: str, *, root: str = DEFAULT_ROOT) -> dict[str, Any]:
+    try:
+        mission = MissionOrchestrator(store=_store(root)).resume_schedule(mission_id)
+        return {"mission_id": mission.id, "schedule": to_dict(mission.schedule)}
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def mission_trigger_impl(mission_id: str, *, root: str = DEFAULT_ROOT) -> dict[str, Any]:
+    try:
+        mission = MissionOrchestrator(store=_store(root)).trigger_schedule(mission_id)
+        return {"mission_id": mission.id, "schedule": to_dict(mission.schedule)}
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
 def onboard_impl(
     mission: str = "",
     *,
@@ -368,6 +437,18 @@ def create_mission_impl(
 def mission_status_impl(mission_id: str, *, root: str = DEFAULT_ROOT) -> dict[str, Any]:
     try:
         return _mission_payload(_store(root), mission_id)
+    except Exception as exc:  # noqa: BLE001
+        return _error(exc)
+
+
+def mission_report_impl(mission_id: str, *, root: str = DEFAULT_ROOT) -> dict[str, Any]:
+    try:
+        store = _store(root)
+        mission = store.load_mission(mission_id)
+        return {
+            "mission_id": mission_id,
+            "report": render_mission_report(mission, store.read_permissions(mission_id)),
+        }
     except Exception as exc:  # noqa: BLE001
         return _error(exc)
 
@@ -848,12 +929,21 @@ def build_server():
     mcp = FastMCP(
         "multi-loop",
         instructions=(
+            "You are the mission OPERATOR: the user states the mission and stays hands-off; you "
+            "own preparation, configuration, execution, and supervision, and every change you make "
+            "is recorded in the mission ledger. "
             "For interactive onboarding, always start with main_loop_open; do not use the legacy "
             "onboard tool. Build the mission through mission_draft_update. Search capabilities, "
             "then call capability_setup_plan for every required tool or backend. Show the plan and "
-            "ask the user before capability_setup_apply or capability_add_command. Do not call "
+            "ask the user before capability_setup_apply or capability_add_command. Check "
+            "mission_readiness before mission_confirm, before the first generation, and whenever "
+            "capabilities change; work through its gaps instead of running blind. Do not call "
             "mission_confirm until mission_draft_validate reports valid, all required capabilities "
             "are available and approved, and scheduled missions have a real unattended runner. "
+            "After creation, reconfigure the mission yourself with mission_configure (budget, "
+            "schedule, runner, verification, capabilities) and manage schedules with mission_pause, "
+            "mission_resume, and mission_trigger. Only two things stay with the user: the mission "
+            "statement itself and side-effect approvals. "
             "The root argument is the multi-loop state directory (normally <workspace>/.multi-loop), "
             "not the workspace itself. The MCP host agent conducts the conversation and execution."
         ),
@@ -1251,6 +1341,16 @@ def build_server():
         return mission_status_impl(mission_id, root=root)
 
     @mcp.tool()
+    def mission_report(mission_id: str, root: str = DEFAULT_ROOT) -> dict[str, Any]:
+        """Render the user-facing executive report for a mission.
+
+        Show this to the user instead of raw status when they ask how the
+        mission is going: it covers progress, evidence, authority, items
+        needing their decision, and what happens next.
+        """
+        return mission_report_impl(mission_id, root=root)
+
+    @mcp.tool()
     def list_missions(root: str = DEFAULT_ROOT) -> dict[str, Any]:
         """List persisted missions."""
         return list_missions_impl(root=root)
@@ -1269,6 +1369,56 @@ def build_server():
             root=root,
             approved_by=approved_by,
         )
+
+    @mcp.tool()
+    def mission_readiness(
+        root: str = DEFAULT_ROOT,
+        mission_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Report per-capability readiness gaps, blockers, and next actions.
+
+        Pass session_id for a draft under onboarding or mission_id for a
+        created mission. Run this before confirming, before the first
+        generation, and after any capability or approval change.
+        """
+        return mission_readiness_impl(root=root, mission_id=mission_id, session_id=session_id)
+
+    @mcp.tool()
+    def mission_configure(
+        mission_id: str,
+        patch: dict[str, Any],
+        root: str = DEFAULT_ROOT,
+        changed_by: str = "operator",
+    ) -> dict[str, Any]:
+        """Reconfigure a mission as its operator; every change is ledger-audited.
+
+        Patch keys: success_criteria, clarifications (empty value deletes a
+        key), budget, schedule (null clears it), execution_profile (runner,
+        runner_command, verification, workspace, autonomy_level), and
+        selected_capabilities. The mission statement and side-effect approvals
+        cannot be changed here.
+        """
+        return mission_configure_impl(mission_id, patch, root=root, changed_by=changed_by)
+
+    @mcp.tool()
+    def mission_pause(
+        mission_id: str,
+        root: str = DEFAULT_ROOT,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Pause a mission's schedule so ticks skip it until resumed."""
+        return mission_pause_impl(mission_id, root=root, reason=reason)
+
+    @mcp.tool()
+    def mission_resume(mission_id: str, root: str = DEFAULT_ROOT) -> dict[str, Any]:
+        """Resume a paused mission schedule and recompute its next run."""
+        return mission_resume_impl(mission_id, root=root)
+
+    @mcp.tool()
+    def mission_trigger(mission_id: str, root: str = DEFAULT_ROOT) -> dict[str, Any]:
+        """Mark a scheduled mission due now so the next tick runs a generation."""
+        return mission_trigger_impl(mission_id, root=root)
 
     @mcp.tool()
     def tick(root: str = DEFAULT_ROOT) -> dict[str, Any]:

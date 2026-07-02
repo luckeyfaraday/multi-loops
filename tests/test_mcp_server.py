@@ -31,8 +31,13 @@ from multi_loop.mcp_server import (
     main_loop_open_impl,
     main_loop_record_turn_impl,
     mission_confirm_impl,
+    mission_configure_impl,
     mission_draft_update_impl,
     mission_draft_validate_impl,
+    mission_pause_impl,
+    mission_readiness_impl,
+    mission_resume_impl,
+    mission_trigger_impl,
     run_status_impl,
     run_tail_impl,
     search_impl,
@@ -298,6 +303,54 @@ class McpServerTests(unittest.TestCase):
             empty = lineage_impl(candidate_id, root=str(Path(tmpdir) / ".multi-loop"))
         self.assertEqual(empty["ancestors"], [])
         json.dumps({"ledger": ledger_search, "missions": mission_search})
+
+    def test_operator_controls_mission_over_mcp(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = str(Path(tmpdir) / ".multi-loop")
+            created = create_mission_impl(
+                "Operator-run mission", "Produce evidence", root=root, schedule="every 1h"
+            )
+            mission_id = created["mission_id"]
+
+            before = mission_readiness_impl(root=root, mission_id=mission_id)
+            self.assertFalse(before["ready"])
+            self.assertTrue(any("unattended runner" in b for b in before["blockers"]))
+
+            configured = mission_configure_impl(
+                mission_id,
+                {
+                    "budget": {"max_tokens": 800},
+                    "execution_profile": {"runner": "shell", "runner_command": "true"},
+                },
+                root=root,
+                changed_by="mcp_host",
+            )
+            self.assertNotIn("error", configured)
+            self.assertEqual(configured["mission"]["budget"]["max_tokens"], 800)
+
+            after = mission_readiness_impl(root=root, mission_id=mission_id)
+            self.assertTrue(after["ready"])
+
+            paused = mission_pause_impl(mission_id, root=root, reason="user vacation")
+            self.assertEqual(paused["schedule"]["state"], "paused")
+            resumed = mission_resume_impl(mission_id, root=root)
+            self.assertEqual(resumed["schedule"]["state"], "scheduled")
+            triggered = mission_trigger_impl(mission_id, root=root)
+            self.assertIsNotNone(triggered["schedule"]["next_run_at"])
+
+    def test_operator_control_errors_are_structured(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = str(Path(tmpdir) / ".multi-loop")
+            created = create_mission_impl("Operator-run mission", "Evidence", root=root)
+
+            no_target = mission_readiness_impl(root=root)
+            self.assertIn("error", no_target)
+            protected = mission_configure_impl(
+                created["mission_id"], {"statement": "hijack"}, root=root
+            )
+            self.assertIn("error", protected)
+            unscheduled = mission_pause_impl(created["mission_id"], root=root)
+            self.assertIn("error", unscheduled)
 
     def test_build_server_constructs_when_mcp_sdk_is_installed(self):
         if importlib.util.find_spec("mcp") is None:

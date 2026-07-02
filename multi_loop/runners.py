@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from .hermes_runtime import HermesRuntimeAdapter, _coerce_output
 from .models import Artifact, CandidateLoop, Mission, to_dict, utc_now_iso
 from .verification import VerificationResult
 
@@ -233,8 +234,108 @@ class AgentCommandRunner:
         )
 
 
+class HermesRunner:
+    """Run a candidate through the Hermes CLI (Stage 1 subprocess bridge).
+
+    The runner owns mission-side concerns — prompt composition, artifact
+    placement, transcript, RunResult shape — and delegates the subprocess
+    contract to HermesRuntimeAdapter. Collected artifacts are whatever files
+    the agent actually wrote into its artifact directory, not what it claims.
+    """
+
+    name = "hermes"
+
+    def __init__(self, adapter: HermesRuntimeAdapter | None = None) -> None:
+        self.adapter = adapter or HermesRuntimeAdapter()
+
+    def run(self, request: RunRequest) -> RunResult:
+        candidate = request.candidate
+        started_at = utc_now_iso()
+        config = candidate.runner_config
+        adapter = self.adapter
+        executable = str(config.get("executable") or "").strip()
+        if executable and executable != adapter.executable:
+            adapter = HermesRuntimeAdapter(
+                executable,
+                default_toolsets=self.adapter.default_toolsets,
+                default_timeout_seconds=self.adapter.default_timeout_seconds,
+            )
+
+        toolsets = _configured_toolsets(config.get("toolsets"))
+        artifact_relative = f"artifacts/generation-{request.generation_index}/{candidate.id}"
+        outcome = adapter.run_agent(
+            _mission_prompt(request),
+            toolsets=toolsets,
+            workspace=_resolve_cwd(request),
+            permissions=request.safety_directive,
+            model=str(config.get("model")) if config.get("model") else None,
+            timeout_seconds=_resolve_timeout(candidate),
+            artifact_dir=request.mission_dir / artifact_relative,
+        )
+
+        artifacts = [
+            Artifact(
+                path=str(path.relative_to(request.mission_dir.resolve())),
+                kind="file",
+                description="File written by the Hermes agent",
+            )
+            for path in adapter.collect_artifacts(outcome.run_id)
+        ]
+        status = "timed out" if outcome.timed_out else f"exit code {outcome.exit_code}"
+        transcript = (
+            f"# Hermes Run\n\n"
+            f"Session: {outcome.session_id or 'unknown'}\n\n"
+            f"Status: {status}\n\n"
+            f"## Response\n\n{outcome.response}\n\n"
+            f"## Stderr\n\n```text\n{outcome.stderr}\n```\n"
+        )
+        transcript_relative = (
+            f"artifacts/generation-{request.generation_index}/{candidate.id}-hermes.md"
+        )
+        transcript_path = request.mission_dir / transcript_relative
+        transcript_path.parent.mkdir(parents=True, exist_ok=True)
+        transcript_path.write_text(transcript, encoding="utf-8")
+        artifacts.append(
+            Artifact(path=transcript_relative, kind="markdown", description="Hermes run transcript")
+        )
+
+        if outcome.response:
+            summary = outcome.response.strip().splitlines()[-1]
+        else:
+            summary = f"Hermes run produced no response ({status})."
+        return RunResult(
+            candidate_loop_id=candidate.id,
+            success=outcome.success,
+            summary=summary,
+            output=outcome.response,
+            artifacts=artifacts,
+            metadata={
+                "runner": self.name,
+                "executable": adapter.executable,
+                "session_id": outcome.session_id,
+                "exit_code": outcome.exit_code,
+                "timed_out": outcome.timed_out,
+                "duration_seconds": outcome.duration_seconds,
+                "toolsets": toolsets or adapter.default_toolsets,
+                "artifact_dir": outcome.artifact_dir,
+            },
+            started_at=started_at,
+            finished_at=utc_now_iso(),
+        )
+
+
 def default_runner_registry() -> RunnerRegistry:
-    return RunnerRegistry([MockRunner(), ShellRunner(), AgentCommandRunner()])
+    return RunnerRegistry([MockRunner(), ShellRunner(), AgentCommandRunner(), HermesRunner()])
+
+
+def _configured_toolsets(value: object) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        names = [name.strip() for name in value.split(",")]
+    else:
+        names = [str(name).strip() for name in value]
+    return [name for name in names if name] or None
 
 
 def _resolve_cwd(request: RunRequest) -> Path:
@@ -265,8 +366,18 @@ def _format_shell_output(command: str, exit_code: int | None, stdout: str, stder
 
 
 def _agent_prompt(request: RunRequest) -> str:
-    candidate = request.candidate
     safety = f"{request.safety_directive}\n\n" if request.safety_directive else ""
+    return f"{safety}{_mission_prompt(request)}"
+
+
+def _mission_prompt(request: RunRequest) -> str:
+    """The candidate prompt without the safety directive.
+
+    The Hermes bridge carries the directive through its ``permissions``
+    parameter so it always leads the final prompt; other runners fold it in
+    via ``_agent_prompt``.
+    """
+    candidate = request.candidate
     pitfalls = ""
     if request.pitfalls:
         bullets = "\n".join(f"- {pitfall}" for pitfall in request.pitfalls)
@@ -276,7 +387,6 @@ def _agent_prompt(request: RunRequest) -> str:
         )
     return (
         "You are running one candidate loop inside a multi-loop mission.\n\n"
-        f"{safety}"
         f"{pitfalls}"
         f"Mission: {request.mission.statement}\n"
         f"Mission success criteria: {request.mission.success_criteria}\n\n"
@@ -284,14 +394,6 @@ def _agent_prompt(request: RunRequest) -> str:
         f"Candidate success criteria: {candidate.success_criteria}\n\n"
         "Return a concise summary, artifacts created, verification performed, and any blockers.\n"
     )
-
-
-def _coerce_output(value: str | bytes | None) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value
 
 
 def run_result_to_dict(result: RunResult) -> dict[str, object]:

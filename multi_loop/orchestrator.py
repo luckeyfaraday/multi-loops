@@ -26,6 +26,7 @@ from .models import (
     Mission,
     MissionSchedule,
     Outcome,
+    PermissionRecord,
     ScheduleState,
     from_dict,
     new_id,
@@ -39,11 +40,36 @@ from .planning import (
     HeuristicPortfolioPlanner,
     MAX_PITFALLS,
 )
-from .policy import APPROVAL_REQUIRED, prepare_candidate, resolve_within, side_effect_directive
+from .policy import (
+    APPROVAL_REQUIRED,
+    prepare_candidate,
+    record_grant,
+    resolve_within,
+    side_effect_directive,
+)
+from .reports import write_generation_report
 from .runners import RunRequest, RunResult, RunnerRegistry, default_runner_registry, run_result_to_dict
 from .schedule_util import compute_next_run, initialize_schedule
 from .storage import MissionNotFound, MissionStore
 from .verification import run_verification
+
+
+# Mission fields the operator may reconfigure after creation. The statement
+# and approvals are excluded on purpose: the statement is the user's word, and
+# approvals must go through the explicit approve_capability gate.
+_CONFIGURABLE_MISSION_FIELDS = frozenset(
+    {
+        "success_criteria",
+        "clarifications",
+        "budget",
+        "schedule",
+        "execution_profile",
+        "selected_capabilities",
+    }
+)
+_CONFIGURABLE_PROFILE_FIELDS = frozenset(
+    {"runner", "runner_command", "verification", "workspace", "autonomy_level"}
+)
 
 
 @dataclass(slots=True)
@@ -132,6 +158,15 @@ class MissionOrchestrator:
             "mission_created",
             {"statement": statement, "clarifications": mission.clarifications},
         )
+        for capability, approved_by in mission.approvals.items():
+            record_grant(
+                self.store,
+                mission.id,
+                capability,
+                approved_by,
+                self.capabilities,
+                note="granted during mission intake",
+            )
         entry = LedgerEntry(
             mission_id=mission.id,
             event_type="mission_created",
@@ -153,7 +188,6 @@ class MissionOrchestrator:
             raise ValueError("Approver identity is required.")
         mission = self.store.load_mission(mission_id)
         mission.approvals[capability] = approved_by.strip()
-        self.store.save_mission(mission)
         self._append_event(
             mission,
             "capability_approved",
@@ -163,6 +197,208 @@ class MissionOrchestrator:
             mission_id=mission.id,
             event_type="capability_approved",
             summary=f"Approved capability {capability} for {approved_by.strip()}",
+        )
+        self._append_ledger(mission, entry)
+        record_grant(
+            self.store, mission.id, capability, approved_by.strip(), self.capabilities
+        )
+        self.store.save_mission(mission)
+        return mission
+
+    def revoke_capability(self, mission_id: str, capability: str, *, revoked_by: str) -> Mission:
+        """Withdraw a previously granted side-effect approval.
+
+        Revocation works even when the capability card has since disappeared:
+        an approval the user wants gone must always be removable.
+        """
+        if not revoked_by.strip():
+            raise ValueError("Revoker identity is required.")
+        mission = self.store.load_mission(mission_id)
+        if capability not in mission.approvals:
+            raise ValueError(f"Capability has no recorded approval: {capability}")
+        del mission.approvals[capability]
+        self._append_event(
+            mission,
+            "capability_revoked",
+            {"capability": capability, "revoked_by": revoked_by.strip()},
+        )
+        entry = LedgerEntry(
+            mission_id=mission.id,
+            event_type="capability_revoked",
+            summary=f"Revoked capability {capability} by {revoked_by.strip()}",
+        )
+        self._append_ledger(mission, entry)
+        card = self.capabilities.get(capability)
+        self.store.append_permission(
+            PermissionRecord(
+                mission_id=mission.id,
+                action="revoked",
+                capability=capability,
+                actor=revoked_by.strip(),
+                side_effect_class=card.side_effect_class if card else None,
+            )
+        )
+        self.store.save_mission(mission)
+        return mission
+
+    def configure_mission(
+        self,
+        mission_id: str,
+        patch: dict[str, object],
+        *,
+        changed_by: str,
+    ) -> Mission:
+        """Apply an operator configuration patch to a persisted mission.
+
+        The operator owns every mutable mission setting: success criteria,
+        clarifications, budget, schedule, execution profile, and the selected
+        capability list. Two things are deliberately out of reach: the mission
+        statement (the user's word — a different mission is a new mission) and
+        side-effect approvals (which must go through ``approve_capability``).
+        Every applied change is recorded as an event and a ledger entry.
+
+        The whole patch is validated before anything is persisted, so a bad
+        field leaves the stored mission untouched.
+        """
+        if not changed_by.strip():
+            raise ValueError("A changed_by identity is required for mission configuration.")
+        unknown = sorted(set(patch) - _CONFIGURABLE_MISSION_FIELDS)
+        if unknown:
+            raise ValueError(
+                "Unknown or protected mission field(s): "
+                + ", ".join(unknown)
+                + ". The mission statement and approvals cannot be changed here."
+            )
+        if not patch:
+            raise ValueError("Configuration patch is empty.")
+
+        mission = self.store.load_mission(mission_id)
+        changes: dict[str, object] = {}
+
+        if "success_criteria" in patch:
+            criteria = str(patch["success_criteria"]).strip()
+            if not criteria:
+                raise ValueError("success_criteria must not be empty.")
+            mission.success_criteria = criteria
+            changes["success_criteria"] = criteria
+
+        if "clarifications" in patch:
+            value = patch["clarifications"]
+            if not isinstance(value, dict):
+                raise ValueError("clarifications must be an object.")
+            applied: dict[str, str] = {}
+            for key, item in value.items():
+                text = str(item).strip() if item is not None else ""
+                if text:
+                    mission.clarifications[str(key)] = text
+                else:
+                    mission.clarifications.pop(str(key), None)
+                applied[str(key)] = text
+            changes["clarifications"] = applied
+
+        if "budget" in patch:
+            value = patch["budget"]
+            if not isinstance(value, dict):
+                raise ValueError("budget must be an object.")
+            allowed = {"max_iterations", "max_seconds", "max_cost_usd", "max_tokens"}
+            unknown_budget = sorted(set(value) - allowed)
+            if unknown_budget:
+                raise ValueError("Unknown budget field(s): " + ", ".join(unknown_budget))
+            if value.get("max_cost_usd") is not None:
+                raise ValueError(
+                    "budget.max_cost_usd is not supported without provider pricing; "
+                    "use max_tokens instead."
+                )
+            for field_name, field_value in value.items():
+                if field_value is not None and field_value <= 0:
+                    raise ValueError(f"budget.{field_name} must be positive.")
+            for field_name, field_value in value.items():
+                setattr(mission.budget, field_name, field_value)
+            changes["budget"] = dict(value)
+
+        if "schedule" in patch:
+            value = patch["schedule"]
+            expression = str(value).strip() if value is not None else ""
+            if expression:
+                mission.schedule = initialize_schedule(MissionSchedule(expression=expression))
+                changes["schedule"] = expression
+            else:
+                mission.schedule = None
+                changes["schedule"] = None
+
+        if "execution_profile" in patch:
+            value = patch["execution_profile"]
+            if not isinstance(value, dict):
+                raise ValueError("execution_profile must be an object.")
+            unknown_profile = sorted(set(value) - _CONFIGURABLE_PROFILE_FIELDS)
+            if unknown_profile:
+                raise ValueError(
+                    "Unknown execution_profile field(s): " + ", ".join(unknown_profile)
+                )
+            profile = mission.execution_profile
+            applied_profile: dict[str, object] = {}
+            if "runner" in value:
+                runner = str(value["runner"]).strip()
+                if runner not in self.runners.names():
+                    raise ValueError(
+                        f"Unknown runner: {runner}. Available: "
+                        + ", ".join(self.runners.names())
+                    )
+                profile.runner = runner
+                applied_profile["runner"] = runner
+            if "runner_command" in value:
+                raw = value["runner_command"]
+                command = str(raw).strip() if raw is not None else ""
+                profile.runner_command = command or None
+                applied_profile["runner_command"] = command or None
+            if "verification" in value:
+                if not isinstance(value["verification"], list):
+                    raise ValueError("execution_profile.verification must be a list.")
+                commands = [str(item).strip() for item in value["verification"] if str(item).strip()]
+                profile.verification = commands
+                applied_profile["verification"] = commands
+            if "workspace" in value:
+                raw = value["workspace"]
+                workspace = str(raw).strip() if raw is not None else ""
+                profile.workspace = workspace or None
+                applied_profile["workspace"] = workspace or None
+            if "autonomy_level" in value:
+                autonomy = str(value["autonomy_level"]).strip()
+                if not autonomy:
+                    raise ValueError("execution_profile.autonomy_level must not be empty.")
+                profile.autonomy_level = autonomy
+                applied_profile["autonomy_level"] = autonomy
+            changes["execution_profile"] = applied_profile
+
+        if "selected_capabilities" in patch:
+            value = patch["selected_capabilities"]
+            if not isinstance(value, list):
+                raise ValueError("selected_capabilities must be a list.")
+            names: list[str] = []
+            for item in value:
+                clean = str(item).strip()
+                if clean and clean not in names:
+                    names.append(clean)
+            unknown_caps = [name for name in names if self.capabilities.get(name) is None]
+            if unknown_caps:
+                raise ValueError("Unknown capabilities: " + ", ".join(unknown_caps))
+            mission.selected_capabilities = names
+            changes["selected_capabilities"] = names
+
+        self.store.save_mission(mission)
+        self._append_event(
+            mission,
+            "mission_configured",
+            {"changes": changes, "changed_by": changed_by.strip()},
+        )
+        entry = LedgerEntry(
+            mission_id=mission.id,
+            event_type="mission_configured",
+            summary=(
+                "Mission configuration changed ("
+                + ", ".join(sorted(changes))
+                + f") by {changed_by.strip()}"
+            ),
         )
         self._append_ledger(mission, entry)
         self.store.save_mission(mission)
@@ -526,6 +762,7 @@ class MissionOrchestrator:
             generation.state = GenerationState.COMPLETED
             synthesis_path = f"artifacts/generation-{generation_index}/synthesis.md"
             self.store.write_artifact(mission.id, synthesis_path, generation.synthesis)
+            report_path = write_generation_report(self.store, mission, generation_index)
             self._append_ledger(
                 mission,
                 LedgerEntry(
@@ -544,6 +781,7 @@ class MissionOrchestrator:
                 {
                     "selected_loop_ids": generation.selected_lineage,
                     "synthesis_path": synthesis_path,
+                    "report_path": report_path,
                     "mutations": generation.mutations,
                     "blocked_candidates": _blocked_candidate_ids(generation),
                 },
@@ -699,6 +937,7 @@ class MissionOrchestrator:
         generation.state = GenerationState.COMPLETED
         synthesis_path = f"artifacts/generation-{generation_index}/synthesis.md"
         self.store.write_artifact(mission.id, synthesis_path, generation.synthesis)
+        report_path = write_generation_report(self.store, mission, generation_index)
 
         synthesis_entry = LedgerEntry(
             mission_id=mission.id,
@@ -717,6 +956,7 @@ class MissionOrchestrator:
             {
                 "selected_loop_ids": generation.selected_lineage,
                 "synthesis_path": synthesis_path,
+                "report_path": report_path,
                 "mutations": generation.mutations,
                 "blocked_candidates": blocked_candidates,
             },
@@ -824,7 +1064,37 @@ class MissionOrchestrator:
             ),
             pitfalls=self._pitfalls_for(mission, candidate),
         )
+        self._record_permission_uses(mission, generation_index, candidate)
         return runner.run(request)
+
+    def _record_permission_uses(
+        self,
+        mission: Mission,
+        generation_index: int,
+        candidate: CandidateLoop,
+    ) -> None:
+        """Record which granted authority a run is about to exercise.
+
+        Written per run attempt, before the runner starts, so the permission
+        ledger shows the authority as exercised even when the run crashes.
+        """
+        for ref in candidate.required_capabilities:
+            card = self.capabilities.get(ref.name)
+            approved_by = mission.approvals.get(ref.name)
+            if card is None or card.side_effect_class not in APPROVAL_REQUIRED or not approved_by:
+                continue
+            self.store.append_permission(
+                PermissionRecord(
+                    mission_id=mission.id,
+                    action="used",
+                    capability=ref.name,
+                    actor=candidate.id,
+                    side_effect_class=card.side_effect_class,
+                    generation_index=generation_index,
+                    candidate_loop_id=candidate.id,
+                    note=f"approved by {approved_by}; run via {candidate.runner}",
+                )
+            )
 
     def _refresh_lessons(self) -> None:
         """Rebuild the derived lessons index from JSON before a generation reads it."""

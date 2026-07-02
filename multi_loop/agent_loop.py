@@ -12,6 +12,7 @@ from .main_agent import MainLoopService
 from .models import to_dict
 from .orchestrator import MissionOrchestrator
 from .providers import ProviderClient, ProviderReply, ProviderToolCall
+from .reports import render_mission_report
 
 
 # Minimum length for a user confirmation quote. A substring match against the
@@ -49,7 +50,7 @@ class MainLoopAgent:
         self.context_limit = context_limit
         self.compaction_threshold = compaction_threshold
         self.service = MainLoopService(self.root)
-        self.orchestrator = MissionOrchestrator(store=self.service.missions)
+        self._refresh_orchestrator()
 
     def turn(self, session_id: str, user_message: str) -> AgentTurnResult:
         if not user_message.strip():
@@ -306,7 +307,7 @@ class MainLoopAgent:
         if call.name == "capability_setup_apply":
             quote = str(args.get("confirmation_quote") or "").strip()
             self._require_user_quote(session_id, quote)
-            return _tool_view(
+            result = _tool_view(
                 self.service.capability_setup_apply(
                     session_id,
                     args.get("capability_names") or [],
@@ -314,10 +315,12 @@ class MainLoopAgent:
                     approved_by="cli_user",
                 )
             )
+            self._refresh_orchestrator()
+            return result
         if call.name == "capability_add_command":
             quote = str(args.get("confirmation_quote") or "").strip()
             self._require_user_quote(session_id, quote)
-            return self.service.add_command_capability(
+            result = self.service.add_command_capability(
                 session_id,
                 name=str(args["name"]),
                 description=str(args["description"]),
@@ -327,6 +330,8 @@ class MainLoopAgent:
                 runner=str(args.get("runner") or "agent_command"),
                 approved_by="cli_user",
             )
+            self._refresh_orchestrator()
+            return result
         if call.name == "mission_capability_setup_plan":
             return self.service.mission_capability_setup_plan(
                 str(args["mission_id"]), args.get("capability_names") or []
@@ -334,15 +339,43 @@ class MainLoopAgent:
         if call.name == "mission_capability_setup_apply":
             quote = str(args.get("confirmation_quote") or "").strip()
             self._require_user_quote(session_id, quote)
-            return self.service.mission_capability_setup_apply(
+            result = self.service.mission_capability_setup_apply(
                 str(args["mission_id"]),
                 args.get("capability_names") or [],
                 confirmation_quote=quote,
                 approved_by="cli_user",
             )
+            self._refresh_orchestrator()
+            return result
         if call.name == "mission_status":
             mission = self.service.missions.load_mission(str(args["mission_id"]))
             return {"mission": to_dict(mission)}
+        if call.name == "mission_readiness":
+            mission_id = str(args.get("mission_id") or "").strip()
+            if mission_id:
+                return self.service.mission_readiness(mission_id)
+            return self.service.readiness(session_id)
+        if call.name == "mission_configure":
+            quote = str(args.get("confirmation_quote") or "").strip()
+            self._require_user_quote(session_id, quote)
+            mission = self.orchestrator.configure_mission(
+                str(args["mission_id"]),
+                args.get("patch") or {},
+                changed_by="cli_user",
+            )
+            return {"mission": to_dict(mission)}
+        if call.name == "mission_pause":
+            mission = self.orchestrator.pause_schedule(
+                str(args["mission_id"]),
+                reason=str(args.get("reason") or "").strip() or None,
+            )
+            return {"mission_id": mission.id, "schedule": to_dict(mission.schedule)}
+        if call.name == "mission_resume":
+            mission = self.orchestrator.resume_schedule(str(args["mission_id"]))
+            return {"mission_id": mission.id, "schedule": to_dict(mission.schedule)}
+        if call.name == "mission_trigger":
+            mission = self.orchestrator.trigger_schedule(str(args["mission_id"]))
+            return {"mission_id": mission.id, "schedule": to_dict(mission.schedule)}
         if call.name == "approve_capability":
             quote = str(args.get("confirmation_quote") or "").strip()
             if not quote:
@@ -363,6 +396,13 @@ class MainLoopAgent:
                 approved_by="cli_user",
             )
             return {"mission_id": mission.id, "approvals": mission.approvals}
+        if call.name == "generation_run":
+            result = self.orchestrator.run_generation(str(args["mission_id"]))
+            return {"result": to_dict(result)}
+        if call.name == "mission_report":
+            mission = self.service.missions.load_mission(str(args["mission_id"]))
+            permissions = self.service.missions.read_permissions(mission.id)
+            return {"report": render_mission_report(mission, permissions)}
         if call.name == "generation_prepare":
             generation = self.orchestrator.prepare_generation(str(args["mission_id"]))
             return {"generation": to_dict(generation)}
@@ -407,6 +447,12 @@ class MainLoopAgent:
             )
             return {"result": to_dict(result)}
         raise ValueError(f"Unknown main-loop tool: {call.name}")
+
+    def _refresh_orchestrator(self) -> None:
+        self.orchestrator = MissionOrchestrator(
+            store=self.service.missions,
+            capabilities=self.service.capabilities,
+        )
 
     def _require_user_quote(
         self,
@@ -567,6 +613,42 @@ TOOL_SCHEMAS = [
     ),
     _function("mission_status", "Read canonical mission state.", {"mission_id": {"type": "string"}}, ["mission_id"]),
     _function(
+        "mission_readiness",
+        "Report capability gaps, blockers, and next actions before running work. "
+        "Omit mission_id to check the current draft.",
+        {"mission_id": {"type": "string"}},
+    ),
+    _function(
+        "mission_configure",
+        "Reconfigure a mission (success_criteria, clarifications, budget, schedule, "
+        "execution_profile, selected_capabilities) after the user approves the change. "
+        "The mission statement and approvals cannot be changed.",
+        {
+            "mission_id": {"type": "string"},
+            "patch": {"type": "object"},
+            "confirmation_quote": {"type": "string"},
+        },
+        ["mission_id", "patch", "confirmation_quote"],
+    ),
+    _function(
+        "mission_pause",
+        "Pause a mission's schedule so ticks skip it until resumed.",
+        {"mission_id": {"type": "string"}, "reason": {"type": "string"}},
+        ["mission_id"],
+    ),
+    _function(
+        "mission_resume",
+        "Resume a paused mission schedule and recompute its next run.",
+        {"mission_id": {"type": "string"}},
+        ["mission_id"],
+    ),
+    _function(
+        "mission_trigger",
+        "Mark a scheduled mission due now so the next tick runs a generation.",
+        {"mission_id": {"type": "string"}},
+        ["mission_id"],
+    ),
+    _function(
         "approve_capability",
         "Record capability-scoped approval only after the user explicitly approves the external action class.",
         {
@@ -575,6 +657,20 @@ TOOL_SCHEMAS = [
             "confirmation_quote": {"type": "string"},
         },
         ["mission_id", "capability", "confirmation_quote"],
+    ),
+    _function(
+        "generation_run",
+        "Run one full generation now: plan candidates, execute them through the "
+        "mission's configured runner, score, and synthesize. Blocks until done.",
+        {"mission_id": {"type": "string"}},
+        ["mission_id"],
+    ),
+    _function(
+        "mission_report",
+        "Render the user-facing executive report (progress, evidence, authority, "
+        "attention items, next steps). Prefer this over raw status when updating the user.",
+        {"mission_id": {"type": "string"}},
+        ["mission_id"],
     ),
     _function("generation_prepare", "Plan a generation without executing it.", {"mission_id": {"type": "string"}}, ["mission_id"]),
     _function(

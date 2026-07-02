@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from multi_loop import MissionOrchestrator, MissionStore
+from multi_loop import MainLoopService, MissionOrchestrator, MissionStore
 from multi_loop.cli import main
 
 
@@ -133,6 +133,35 @@ class CliTests(unittest.TestCase):
             {candidate.runner for candidate in loaded.generations[0].candidate_loops},
             {"agent_command"},
         )
+
+    def test_capabilities_cli_includes_configured_commands(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = str(Path(tmpdir) / ".multi-loop")
+            service = MainLoopService(root)
+            session_id = service.open(interface="mcp", mission_seed="Use custom tool")[
+                "session"
+            ]["id"]
+            service.update_draft(session_id, {"success_criteria": "Tool returns evidence"})
+            service.add_command_capability(
+                session_id,
+                name="custom_tool",
+                description="Run a user-approved custom command.",
+                command="true",
+                side_effect_class="read_only",
+                confirmation_quote="Yes, add this command.",
+                runner="shell",
+            )
+            stdout = io.StringIO()
+
+            with contextlib.redirect_stdout(stdout):
+                self.assertEqual(
+                    main(["--root", root, "capabilities", "--describe", "custom_tool"]),
+                    0,
+                )
+            described = json.loads(stdout.getvalue())
+
+        self.assertEqual(described["name"], "custom_tool")
+        self.assertEqual(described["runner"], "shell")
 
 
 if __name__ == "__main__":

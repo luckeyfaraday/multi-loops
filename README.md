@@ -1,9 +1,32 @@
 # Multi-Loop Orchestration
 
-`multi-loop` is a standalone mission orchestration harness inspired by
-single-goal loop systems.
+`multi-loop` turns an agent into a long-running mission operator.
 
-The basic execution pattern it generalizes is a bounded goal loop:
+The user states a mission — "start a company", "find the best ad campaign",
+"build this SaaS" — and stays hands-off. The **operator** (an MCP host agent
+like Claude Code or Codex, or the built-in CLI agent) interviews them once,
+wires up the capabilities the mission needs, then runs and supervises a
+portfolio of goal loops until the mission converges — reconfiguring budgets,
+schedules, runners, and capabilities along the way. `multi-loop` is the
+durable mission brain behind that operator: deterministic state, readiness
+gates, policy, verification, scheduling, lineage, and audit.
+
+## The Operator Model
+
+Three roles, spelled out in [docs/operator.md](docs/operator.md):
+
+- **Principal (the user):** owns the mission statement, side-effect
+  approvals, and checkpoint decisions. Nothing else.
+- **Operator (the agent):** the executive director. Owns preparation,
+  configuration, execution, and supervision of everyone and everything — the
+  candidate loops, sub-agents, schedules, and capabilities. `mission_readiness`
+  drives its prep; `mission_configure` and the schedule controls give it
+  audited authority over every mutable mission setting.
+- **Harness (multi-loop):** owns control flow, state, budgets, leases,
+  selection, convergence, and the audit ledger. Models provide judgement
+  inside well-scoped roles; the harness makes it durable and accountable.
+
+The basic execution pattern the harness generalizes is a bounded goal loop:
 
 ```text
 goal -> decompose -> execute workers -> aggregate -> review -> refine -> done
@@ -36,6 +59,10 @@ The reference model has three levels:
    iterates until success.
 3. Multi-loop orchestration: user gives a mission, the meta-harness runs many
    goal loops inside a broader orchestration loop.
+4. Operated missions: an operator agent owns the meta-loop on the user's
+   behalf — prep, configuration, execution, and supervision — and the user is
+   only consulted for the mission itself, side-effect approvals, and
+   checkpoints.
 
 ## Design Principle
 
@@ -570,7 +597,16 @@ command on stdin, so a real CLI agent works each candidate loop:
 python3 -m multi_loop run <mission-id> --runner-command "claude -p"
 # or run a deterministic shell command per candidate:
 python3 -m multi_loop run <mission-id> --runner shell --runner-command "pytest -q"
+# or run each candidate through the installed Hermes CLI (Stage 1 subprocess bridge):
+python3 -m multi_loop run <mission-id> --runner hermes
 ```
+
+The `hermes` runner needs no command: it launches one `hermes chat -q ... -Q`
+subprocess per candidate with a bounded toolset grant (default `web,file`),
+prepends the mission's side-effect directive to the prompt, and collects
+evidence from the candidate's artifact directory — the files the agent actually
+wrote, not what it claims. Per-candidate `runner_config` accepts `toolsets`,
+`model`, and `executable` overrides.
 
 Real runs are governed by two safety rails:
 
@@ -585,6 +621,16 @@ Real runs are governed by two safety rails:
   that did the work but whose runner was killed (e.g. timed out before reporting), and
   fails one that exited cleanly but cannot prove its claimed work, so fitness reflects
   evidence rather than the worker's self-report.
+
+Every grant, use, and revocation of side-effect authority is also written to a
+durable per-mission permission ledger (`permissions.jsonl`), inspectable at any
+time — this is what keeps hands-off operation from becoming hidden operation:
+
+```bash
+python3 -m multi_loop approve <mission-id> browser_automation --by user
+python3 -m multi_loop revoke <mission-id> browser_automation --by user
+python3 -m multi_loop permissions <mission-id>
+```
 
 ```bash
 # after approving the candidate's specific GitHub write capability, verify the action:
@@ -626,7 +672,27 @@ python3 -m multi_loop pause <mission-id> --reason "holding for review"
 python3 -m multi_loop resume <mission-id>
 python3 -m multi_loop trigger <mission-id>   # mark due now
 python3 -m multi_loop tick                    # run all missions that are due
+python3 -m multi_loop serve --interval 60     # keep ticking until interrupted
 ```
+
+`serve` is the unattended continuation path: leave it running (tmux, systemd,
+cron wrapper) and every scheduled mission advances one bounded generation per
+due tick with no session attached.
+
+### Executive Report
+
+After every generation the orchestrator writes a user-facing report to
+`reports/generation-<n>.md` inside the mission directory, and the same report
+can be rendered on demand from current state:
+
+```bash
+python3 -m multi_loop report <mission-id>
+```
+
+It summarizes progress, evidence paths, granted/used authority, items that
+need the user's decision (policy-blocked candidates, failures, schedule
+errors), and what happens next — rendered deterministically from mission
+state, no LLM involved.
 
 The legacy deterministic `onboard` command remains available for scripts. The
 interactive path is the main-loop agent:
@@ -704,6 +770,23 @@ The server exposes the mission runtime directly:
   plan/apply pair for an already-created mission. None of these embed credentials.
 - `create_mission`, `mission_status`, `list_missions`, and `approve_capability`
   manage persisted mission state.
+- `mission_report` renders the user-facing executive report for a mission —
+  what the host agent should show the user instead of raw status.
+- `mission_readiness` is the operator's prep instrument: for a draft session or
+  a created mission it classifies every required capability (`ready`,
+  `needs_setup`, `needs_approval`, `unknown`) with concrete fixes, checks that
+  scheduled missions have a real unattended runner, and returns blockers,
+  notices, and next actions. Run it before confirming, before the first
+  generation, and after any capability or approval change.
+- `mission_configure` gives the operator audited authority over every mutable
+  mission setting after creation: success criteria, clarifications, budget,
+  schedule (null clears it), execution profile (runner, runner command,
+  verification, workspace, autonomy level), and the selected capability list.
+  The mission statement and side-effect approvals are deliberately excluded;
+  each applied patch is validated atomically and recorded as a
+  `mission_configured` event plus ledger entry.
+- `mission_pause`, `mission_resume`, and `mission_trigger` control mission
+  schedules over MCP, mirroring the CLI's `pause`/`resume`/`trigger`.
 - `run_generation` runs one generation. It detaches by default and returns a
   `run_id` immediately.
 - `run_status`, `run_tail`, `run_result`, and `run_list` monitor detached runs.
@@ -727,6 +810,51 @@ The server exposes the mission runtime directly:
 Detached MCP run logs live under `.multi-loop/mcp-runs/<run-id>/` with
 `events.jsonl`, `status.json`, and `result.json`. Mission state remains under
 `.multi-loop/runs/<mission-id>/`.
+
+## Mission Console (TUI)
+
+`multi-loop tui` opens multi-loop's own agent environment — the product surface,
+not a third-party chat pointed at files:
+
+- **Dashboard** — every mission with generation progress, schedule state, and
+  next-run time; selecting a mission renders its executive report inline.
+- **Chat** — the operator room. The app assembles a fresh state snapshot every
+  turn and feeds it to the engine (codex headless with the multi-loop MCP
+  tools), so the operator already knows the mission state; you never explain or
+  point it anywhere. `/approve <capability>` and `/revoke <capability>` are
+  handled locally and written straight to the permission ledger.
+- **Settings** — schedule, runner, and authority grants per mission.
+
+A serve loop ticks scheduled missions inside the app: when a generation
+finishes, its executive report is pushed into the chat feed automatically.
+
+```bash
+pip install -e ".[tui]"
+multi-loop tui
+```
+
+The engine is deliberately swappable: the TUI owns presentation and context
+assembly, the harness owns policy and durability, and codex is just inference
+plus tools behind the chat pane.
+
+### Codex As The Operator
+
+With the MCP server registered in Codex, the Codex CLI (ChatGPT OAuth) is the
+executive-director agent: you state the mission in a codex chat, and it drives
+draft → confirm → capability setup → run → report through the MCP tools while
+multi-loop keeps ownership of policy, ledgers, and evidence.
+
+```toml
+# ~/.codex/config.toml
+[mcp_servers.multi-loop]
+command = "/path/to/multi-loop/.venv/bin/multi-loop-mcp"
+default_tools_approval_mode = "approve"   # multi-loop's own policy gates side effects
+```
+
+Auto-approving the MCP call layer is safe because the harness, not the host
+agent, enforces the side-effect policy: outward actions still require a
+recorded `approve_capability` grant, and every grant/use/revocation lands in
+the permission ledger.
 
 ## Program Files
 

@@ -5,16 +5,18 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 from .agent_loop import MainLoopAgent
-from .capabilities import default_capabilities
+from .capability_config import configured_capabilities
 from .index import MissionIndex
 from .main_agent import MainLoopService
-from .models import to_dict
+from .models import to_dict, utc_now_iso
 from .onboarding import OnboardingEngine, collect_answers, format_capability_brief
 from .orchestrator import MissionOrchestrator, ScheduleNotConfigured
 from .providers import OpenAICompatibleClient, ProviderStore
+from .reports import render_mission_report
 from .scheduler import MissionScheduler
 from .storage import MissionNotFound, MissionStore
 
@@ -144,6 +146,16 @@ def main(argv: list[str] | None = None) -> int:
     approve_parser.add_argument("capability", help="Capability name")
     approve_parser.add_argument("--by", default="user", help="Approver identity")
 
+    revoke_parser = subparsers.add_parser("revoke", help="Revoke a granted capability approval")
+    revoke_parser.add_argument("mission_id", help="Mission ID")
+    revoke_parser.add_argument("capability", help="Capability name")
+    revoke_parser.add_argument("--by", default="user", help="Revoker identity")
+
+    permissions_parser = subparsers.add_parser(
+        "permissions", help="Show the mission's permission ledger (grants, uses, revocations)"
+    )
+    permissions_parser.add_argument("mission_id", help="Mission ID")
+
     pause_parser = subparsers.add_parser("pause", help="Pause a mission schedule")
     pause_parser.add_argument("mission_id", help="Mission ID")
     pause_parser.add_argument("--reason", help="Optional pause reason")
@@ -191,6 +203,20 @@ def main(argv: list[str] | None = None) -> int:
     lineage_parser.add_argument("candidate_id", help="Candidate loop ID")
 
     subparsers.add_parser("tick", help="Run scheduled mission ticks that are due")
+
+    report_parser = subparsers.add_parser("report", help="Show the executive mission report")
+    report_parser.add_argument("mission_id", help="Mission ID")
+
+    serve_parser = subparsers.add_parser(
+        "serve", help="Keep scheduled missions ticking (foreground daemon)"
+    )
+    serve_parser.add_argument(
+        "--interval", type=float, default=60.0, help="Seconds between ticks (default 60)"
+    )
+
+    subparsers.add_parser(
+        "tui", help="Open the mission console (dashboard, operator chat, settings)"
+    )
 
     args = parser.parse_args(argv)
     store = MissionStore(args.root)
@@ -387,6 +413,26 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
         _print_json({"mission_id": mission.id, "approvals": mission.approvals})
         return 0
 
+    if args.command == "revoke":
+        orchestrator = MissionOrchestrator(store=store)
+        mission = orchestrator.revoke_capability(
+            args.mission_id,
+            args.capability,
+            revoked_by=args.by,
+        )
+        _print_json({"mission_id": mission.id, "approvals": mission.approvals})
+        return 0
+
+    if args.command == "permissions":
+        records = store.read_permissions(args.mission_id)
+        _print_json(
+            {
+                "mission_id": args.mission_id,
+                "permissions": [to_dict(record) for record in records],
+            }
+        )
+        return 0
+
     if args.command in {"pause", "resume", "trigger"}:
         orchestrator = MissionOrchestrator(store=store)
         if args.command == "pause":
@@ -399,7 +445,7 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
         return 0
 
     if args.command == "capabilities":
-        registry = default_capabilities()
+        registry = configured_capabilities(args.root)
         if args.describe:
             if registry.get(args.describe) is None:
                 print(f"Unknown capability: {args.describe}", file=sys.stderr)
@@ -422,7 +468,7 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
         return 0
 
     if args.command == "toolsets":
-        registry = default_capabilities()
+        registry = configured_capabilities(args.root)
         if args.resolve:
             names = args.resolve.replace(",", " ").split()
             try:
@@ -472,8 +518,47 @@ def _dispatch(args: argparse.Namespace, store: MissionStore) -> int:
         _print_json(to_dict(report))
         return 0
 
+    if args.command == "report":
+        mission = store.load_mission(args.mission_id)
+        print(render_mission_report(mission, store.read_permissions(args.mission_id)))
+        return 0
+
+    if args.command == "serve":
+        return _serve(store, interval=args.interval)
+
+    if args.command == "tui":
+        try:
+            from .tui.app import run_tui
+        except ImportError:
+            print(
+                "The mission console needs the optional TUI extra: pip install -e '.[tui]'",
+                file=sys.stderr,
+            )
+            return 1
+        return run_tui(args.root)
+
     print(f"Unknown command: {args.command}", file=sys.stderr)
     return 2
+
+
+def _serve(store: MissionStore, *, interval: float) -> int:
+    """Tick scheduled missions until interrupted — the unattended run loop."""
+    scheduler = MissionScheduler(store=store)
+    print(f"multi-loop serve: ticking every {interval:.0f}s (Ctrl-C to stop)")
+    try:
+        while True:
+            report = scheduler.tick()
+            for result in report.ticked:
+                print(
+                    f"[{utc_now_iso()}] {result.mission_id}: "
+                    f"generation {result.generation_index} ran "
+                    f"({result.last_status or 'unknown'}), next {result.next_run_at or 'n/a'}",
+                    flush=True,
+                )
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("multi-loop serve: stopped")
+        return 0
 
 
 def _print_json(data: dict) -> None:
